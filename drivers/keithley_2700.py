@@ -3,6 +3,40 @@ import re
 import pyvisa
 import time
 
+KEITHLEY_2700_FUNCTIONS = [
+    "VOLT:DC",
+    "VOLT:AC",
+    "CURR:DC",
+    "CURR:AC",
+    "RES",
+    "FRES",
+    "TEMP",
+    "FREQ",
+    "PER",
+    "CONT"
+]
+
+SUPPORTED_AVG = [
+    "VOLT:DC",
+    "VOLT:AC",
+    "CURR:DC",
+    "CURR:AC",
+    "RES",
+    "FRES",
+    "TEMP"
+]
+
+SUPPORTED_TCON = ["REP", "MOV"]  # Repeating / Moving
+
+PARAM_MAP = {
+    "nplc": "NPLC",
+    "range": "RANG",
+    "autorange": "RANG:AUTO",
+    "digits": "DIG",
+    "offset_comp": "OCOM",
+    "tran": "TRAN",
+    "frtd_type": "FRTD:TYPE"
+}
 
 class Keithley2700:
     def __init__(self, gpib_card=0, gpib_address=14, timeout=10000):
@@ -11,6 +45,8 @@ class Keithley2700:
         self.inst = self.rm.open_resource(resource_name)
         self.inst.timeout = timeout
         self.configure_output_format()
+        self.enable_auto_zero()
+        self.init_config()
 
     # =========================
     # BASIC
@@ -24,19 +60,58 @@ class Keithley2700:
     # =========================
     # INIT CONFIG
     # =========================
-    def configure_temperature_rtd(self, rtd_type="PT100", four_wire=True, nplc=1):
+    def init_config(self, function="TEMP", frtd_type="PT100", nplc=1):
+        self.enable_auto_zero()
+        self.set_function(function=function, nplc=nplc, frtd_type=frtd_type)
+
+    # =========================
+    # SYSTEMS
+    # =========================
+    def enable_auto_zero(self):
         self.inst.write("SYST:AZER ON")
 
-        self.inst.write("SENS:FUNC 'TEMP'")
-        self.inst.write("SENS:TEMP:TRAN RTD")
-        self.inst.write(f"SENS:TEMP:RTD:TYPE {rtd_type}")
+    # =========================
+    # FUNCTION CONFIGURATION
+    # =========================
 
-        if four_wire:
-            self.inst.write("SENS:TEMP:RTD:FOUR ON")
-        else:
-            self.inst.write("SENS:TEMP:RTD:FOUR OFF")
+    def set_function(self, function, **kwargs):
+        """
+        Configura la función de medida y aplica parámetros adicionales.
 
-        self.inst.write(f"SENS:TEMP:NPLC {nplc}")
+        :param function: Ej: "VOLT:DC", "TEMP"
+        :param kwargs: Parámetros adicionales (nplc=1, range=10, autorange=True, etc.)
+        """
+
+        function = function.upper()
+
+        if function not in KEITHLEY_2700_FUNCTIONS:
+            raise ValueError(f"Función no válida: {function}")
+
+        # Selección de función
+        self.inst.write(f"SENS:FUNC '{function}'")
+
+        # Aplicar parámetros adicionales
+        if kwargs:
+            self._apply_function_settings(function, **kwargs)
+
+    def _apply_function_settings(self, function, **kwargs):
+        """
+        Aplica parámetros SCPI a una función concreta
+        """
+
+        for key, value in kwargs.items():
+            key_lower = key.lower()
+
+            if key_lower not in PARAM_MAP:
+                raise ValueError(f"Parámetro no soportado: {key}")
+
+            scpi_cmd = PARAM_MAP[key_lower]
+
+            # Booleanos → ON/OFF
+            if isinstance(value, bool):
+                value = "ON" if value else "OFF"
+
+            self.inst.write(f"SENS:{function}:{scpi_cmd} {value}")
 
     # =========================
     # CHANNEL CONTROL
@@ -170,15 +245,49 @@ class Keithley2700:
 
         return parsed
 
+    def get_measure_function(self, clear_buffer=True):
+        if clear_buffer: self.inst.write("*CLS")
+        response = self.inst.query(":SENS:FUNC?")
+        function = response.strip().replace('"', '')
+        return function
+
     # =========================
     # FILTER (simple)
     # =========================
-    def enable_averaging(self, function='TEMP', count=10):
-        self.inst.write("SENS:AVER:STAT ON")
-        self.inst.write(f"SENS:AVER:COUN {count}")
+    def enable_averaging(self, function='TEMP', count=5, tcontrol='REP', window=None):
+        if function not in KEITHLEY_2700_FUNCTIONS:
+            raise ValueError(f"Función no válida: {function}")
 
-    def disable_averaging(self, function='TEMP'):
-        self.inst.write("SENS:AVER:STAT OFF")
+        if function not in SUPPORTED_AVG:
+            raise ValueError(f"Averaging no soportado para: {function}")
+
+        self.inst.write(f"SENS:{function}:AVER:STAT ON")
+        self.inst.write(f"SENS:{function}:AVER:COUN {count}")
+
+        # Tipo de control (REP o MOV)
+        if tcontrol is not None:
+            tcontrol = tcontrol.upper()
+            if tcontrol not in SUPPORTED_TCON:
+                raise ValueError(f"TCON inválido: {tcontrol} (usa REP o MOV)")
+
+            self.inst.write(f"SENS:{function}:AVER:TCON {tcontrol}")
+
+        # Window solo tiene sentido con MOV
+        if window is not None:
+            if tcontrol != "MOV":
+                raise ValueError("WINDOW solo es válido cuando TCON = MOV")
+
+            self.inst.write(f"SENS:{function}:AVER:WIND {window}")
+
+    def disable_averaging(self, function):
+        if function not in KEITHLEY_2700_FUNCTIONS:
+            raise ValueError(f"Función no válida: {function}")
+
+        if function not in SUPPORTED_AVG:
+            raise ValueError(f"Averaging no soportado para: {function}")
+
+        self.inst.write(f"SENS:{function}:AVER:STAT OFF")
+
 
     # =========================
     # CLOSE
