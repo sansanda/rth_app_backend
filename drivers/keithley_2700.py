@@ -173,12 +173,12 @@ class Keithley2700:
     # =========================
     # FILTER (simple)
     # =========================
-        def enable_averaging(self, count=10):
-            self.inst.write("SENS:AVER:STAT ON")
-            self.inst.write(f"SENS:AVER:COUN {count}")
+    def enable_averaging(self, function='TEMP', count=10):
+        self.inst.write("SENS:AVER:STAT ON")
+        self.inst.write(f"SENS:AVER:COUN {count}")
 
-        def disable_averaging(self):
-            self.inst.write("SENS:AVER:STAT OFF")
+    def disable_averaging(self, function='TEMP'):
+        self.inst.write("SENS:AVER:STAT OFF")
 
     # =========================
     # CLOSE
