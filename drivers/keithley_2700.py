@@ -13,7 +13,8 @@ KEITHLEY_2700_FUNCTIONS = [
     "TEMP",
     "FREQ",
     "PER",
-    "CONT"
+    "CONT",
+    "FUNC"
 ]
 
 SUPPORTED_AVG = [
@@ -52,8 +53,8 @@ def get_function_scpi_command(subsystem=None, function=None, value=None, channel
     if not subsystem:
         raise ValueError("Debes declarar el subsistema")
 
-    if not function or function not in KEITHLEY_2700_FUNCTIONS:
-        raise ValueError(f"Función no válida: {function}")
+    # if not function or function not in KEITHLEY_2700_FUNCTIONS:
+    #     raise ValueError(f"Función no válida: {function}")
 
     function = function.upper()
     subsystem = subsystem.upper()
@@ -107,18 +108,69 @@ class Keithley2700:
     def reset(self):
         self.inst.write("*RST")
 
+    def clear(self):
+        """
+        Limpia el estado del instrumento.
+
+        - Limpia registros de estado (*CLS)
+        - Vacía cola de errores (SYST:ERR?)
+        """
+
+        # 1. Clear estándar SCPI
+        self.inst.write("*CLS")
+
+        # 2. Vaciar cola de errores completamente
+        while True:
+            err = self.inst.query("SYST:ERR?").strip()
+            if err.startswith("0"):
+                break
+
     # =========================
     # INIT CONFIG
     # =========================
     def init_config(self, function="TEMP", frtd_type="PT100", nplc=1):
         self.enable_auto_zero()
-        self.set_function(function=function, nplc=nplc, frtd_type=frtd_type)
+        cmd = get_function_scpi_command(subsystem="SENS",
+                                        function="FUNC",
+                                        value='TEMP',
+                                        channels=[104, 105])
+        self.inst.write(cmd)
 
     # =========================
-    # SYSTEMS
+    # SYSTEM
     # =========================
+    def read_esr(self):
+        """
+        Lee el Standard Event Status Register (*ESR?).
+
+        Devuelve:
+            dict con los bits interpretados
+        """
+
+        response = self.inst.query("*ESR?").strip()
+
+        try:
+            esr = int(response)
+        except ValueError:
+            raise RuntimeError(f"Respuesta inválida de ESR: {response}")
+
+        return {
+            "raw": esr,
+            "operation_complete": bool(esr & 0b00000001),  # OPC
+            "request_control": bool(esr & 0b00000010),  # RQC
+            "query_error": bool(esr & 0b00000100),  # QYE
+            "device_dependent_error": bool(esr & 0b00001000),  # DDE
+            "execution_error": bool(esr & 0b00010000),  # EXE
+            "command_error": bool(esr & 0b00100000),  # CME
+            "user_request": bool(esr & 0b01000000),  # URQ
+            "power_on": bool(esr & 0b10000000),  # PON
+        }
+
     def enable_auto_zero(self):
-        self.inst.write("SYST:AZER ON")
+        cmd = get_function_scpi_command(subsystem="SYST",
+                                        function="AZER",
+                                        value='ON')
+        self.inst.write(cmd)
 
     # =========================
     # FUNCTION CONFIGURATION
@@ -299,9 +351,49 @@ class Keithley2700:
 
         self.inst.write(f"SENS:{function}:AVER:STAT OFF")
 
-
     # =========================
     # CLOSE
     # =========================
     def close(self):
         self.inst.close()
+
+
+def main():
+    k2700 = Keithley2700()
+    k2700.clear()
+    print(k2700.idn())
+    print(k2700.read_esr())
+    # cmd = get_function_scpi_command(subsystem="SENS",
+    #                                 function="FUNC",
+    #                                 value='TEMP',
+    #                                 channels=[104, 105])
+    # k2700.inst.write(cmd)
+    # print(k2700.read_esr())
+
+    # cmd = get_function_scpi_command(subsystem="SENS",
+    #                                 function="TEMP:NPLC",
+    #                                 value=1,
+    #                                 channels=[104, 105])
+    #
+    # cmd = get_function_scpi_command(subsystem="SENS",
+    #                                 function="TEMP:AVER:TCON",
+    #                                 value="REP")
+    #
+    # cmd = get_function_scpi_command(subsystem="SENS",
+    #                                 function="TEMP:AVER:COUN",
+    #                                 value=2,
+    #                                 channels=[104, 105])
+    #
+    # cmd = get_function_scpi_command(subsystem="SENS",
+    #                                 function="TEMP:TRAN",
+    #                                 value="FRTD",
+    #                                 channels=[104, 105])
+    #
+    # cmd = get_function_scpi_command(subsystem="SENS",
+    #                                 function="TEMP:FRTD:TYPE",
+    #                                 value="PT100",
+    #                                 channels=[104, 105])
+
+
+if __name__ == "__main__":
+    main()
