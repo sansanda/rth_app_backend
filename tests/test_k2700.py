@@ -7,11 +7,6 @@ def k2700():
     inst = Keithley2700(gpib_card=0, gpib_address=14, timeout=5000);
 
     inst.reset()
-    inst.configure_temperature_rtd(
-        rtd_type="PT100",
-        four_wire=True,
-        nplc=1
-    )
 
     yield inst
 

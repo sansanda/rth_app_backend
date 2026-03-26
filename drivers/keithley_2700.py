@@ -38,6 +38,56 @@ PARAM_MAP = {
     "frtd_type": "FRTD:TYPE"
 }
 
+
+def get_function_scpi_command(subsystem=None, function=None, value=None, channels=None):
+    """
+    Construye comando SCPI para seleccionar función de medida.
+
+    :param subsystem: Ej: "SENS"
+    :param function: Ej: "VOLT:DC", "TEMP"
+    :param value: Valor opcional (ej: "ON", "OFF", etc.)
+    :param channels: Lista de canales [101,102]
+    """
+
+    if not subsystem:
+        raise ValueError("Debes declarar el subsistema")
+
+    if not function or function not in KEITHLEY_2700_FUNCTIONS:
+        raise ValueError(f"Función no válida: {function}")
+
+    function = function.upper()
+    subsystem = subsystem.upper()
+
+    base_cmd = f"{subsystem}:{function}"
+    command = base_cmd
+
+    if value is not None:
+        if isinstance(value, bool):
+            value = "ON" if value else "OFF"
+        else:
+            value = str(value)
+        command += f" {value}"
+
+    # ---- Formateo de canales ----
+    if channels is not None:
+        if not channels:
+            raise ValueError("channels no puede estar vacío")
+        if not all(isinstance(ch, int) for ch in channels):
+            raise ValueError("channels debe contener enteros")
+
+    clist_str = ""
+    if channels:
+        if not isinstance(channels, (list, tuple)):
+            raise ValueError("channels debe ser lista o tupla")
+
+        ch_str = ",".join(str(ch) for ch in channels)
+        clist_str = f" (@{ch_str})"
+
+        command += clist_str
+
+    return command
+
+
 class Keithley2700:
     def __init__(self, gpib_card=0, gpib_address=14, timeout=10000):
         resource_name = "GPIB" + str(gpib_card) + "::" + str(gpib_address) + "::INSTR"
@@ -73,45 +123,6 @@ class Keithley2700:
     # =========================
     # FUNCTION CONFIGURATION
     # =========================
-
-    def set_function(self, function, **kwargs):
-        """
-        Configura la función de medida y aplica parámetros adicionales.
-
-        :param function: Ej: "VOLT:DC", "TEMP"
-        :param kwargs: Parámetros adicionales (nplc=1, range=10, autorange=True, etc.)
-        """
-
-        function = function.upper()
-
-        if function not in KEITHLEY_2700_FUNCTIONS:
-            raise ValueError(f"Función no válida: {function}")
-
-        # Selección de función
-        self.inst.write(f"SENS:FUNC '{function}'")
-
-        # Aplicar parámetros adicionales
-        if kwargs:
-            self._apply_function_settings(function, **kwargs)
-
-    def _apply_function_settings(self, function, **kwargs):
-        """
-        Aplica parámetros SCPI a una función concreta
-        """
-
-        for key, value in kwargs.items():
-            key_lower = key.lower()
-
-            if key_lower not in PARAM_MAP:
-                raise ValueError(f"Parámetro no soportado: {key}")
-
-            scpi_cmd = PARAM_MAP[key_lower]
-
-            # Booleanos → ON/OFF
-            if isinstance(value, bool):
-                value = "ON" if value else "OFF"
-
-            self.inst.write(f"SENS:{function}:{scpi_cmd} {value}")
 
     # =========================
     # CHANNEL CONTROL
