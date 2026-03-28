@@ -128,6 +128,7 @@ class Keithley2700:
     # =========================
     # INIT CONFIG
     # =========================
+    #TODO: modificar esto, de momento no trabajaremos en modo scan
     def init_config(self, function="TEMP", frtd_type="PT100", nplc=1):
         self.enable_auto_zero()
         cmd = get_function_scpi_command(subsystem="SENS",
@@ -227,6 +228,7 @@ class Keithley2700:
         return self._parse_reading(self.inst.query("READ?"))
 
     def read_channel(self, channel, delay=0.05):
+        self.open_all_channels()
         self.close_channel(channel)
         time.sleep(delay)  # settling relé
         return self.read()
@@ -317,6 +319,7 @@ class Keithley2700:
     # =========================
     # FILTER (simple)
     # =========================
+    #TODO: Repasar
     def enable_averaging(self, function='TEMP', count=5, tcontrol='REP', window=None):
         if function not in KEITHLEY_2700_FUNCTIONS:
             raise ValueError(f"Función no válida: {function}")
