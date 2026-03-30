@@ -1,0 +1,126 @@
+{
+  "profile_name": "thermal_test_v1",
+  "multimeter_setup": {
+    "enabled": true,
+    "gpib": {
+      "address": 16,
+      "timeout_ms": 5000
+    },
+    "temperature": {
+      "sensor": {
+        "type": "FRTD",
+        "subtype": "PT100"
+      },
+      "channels": {
+        "top": {
+          "id": "top",
+          "enabled": true,
+          "channel": 101,
+          "description": "Top PT100 Sensor (Copper Spreader)"
+        },
+        "bottom": {
+          "id": "bottom",
+          "enabled": true,
+          "channel": 102,
+          "description": "Bottom PT100 Sensor (Aluminium HeatSink)"
+        }
+      },
+      "nplc": 1,
+      "averaging": {
+        "enabled": true,
+        "type": "MOV",
+        "window": 0.1,
+        "count": 10
+      }
+    }
+  },
+  "source_meter_setup": {
+    "enabled": true,
+    "gpib": {
+      "address": 17,
+      "timeout_ms": 5000
+    },
+    "output": {
+      "enabled": true,
+      "connection": "FRONT"
+    },
+    "source": {
+      "mode": "CURRENT",
+      "current": 0.0,
+      "voltage_compliance": 63,
+      "delay_ms": 1000
+    },
+    "measure": {
+      "range_volts": 100,
+      "nplc": 1,
+      "timestamps": true
+    },
+    "averaging": {
+      "enabled": true,
+      "type": "MOV",
+      "window": 0.1,
+      "count": 10
+    }
+  },
+  "limits_setup": {
+    "enabled": true,
+    "current": {
+      "max": 0.7
+    },
+    "temperature": {
+      "unit": "C",
+      "max": 55
+    }
+  },
+  "process_setup": {
+    "enabled": true,
+    "init": {
+      "test_multimeter": true,
+      "test_source_meter": true,
+      "notify": {
+        "enabled": true,
+        "phone_number": "661290548"
+      }
+    },
+    "temperature_ramp_up": {
+      "unit": "C",
+      "target_temperature": 55,
+      "duration_min": 5
+    },
+    "temperature_stabilization": {
+      "duration_min": 15
+    },
+    "measurement": {
+      "num_measures": 15,
+      "sample_period_s": 120,
+      "channel_delay_ms": 100
+    },
+    "temperature_ramp_down": {
+      "duration_min": 15
+    },
+    "end": {
+      "notify": {
+        "enabled": true,
+        "phone_number": "661290548"
+      }
+    },
+    "safety": {
+      "stop_on_limit": true,
+      "cooldown_on_overtemp": true
+    }
+  },
+  "measure_results": {
+    "enabled": true,
+    "mode": "append",
+    "file": {
+      "name": "rth",
+      "format": "csv",
+      "path": ".",
+      "include_timestamp": true
+    },
+    "autosave": {
+      "enabled": true,
+      "period_min": 1
+    }
+  }
+}

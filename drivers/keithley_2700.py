@@ -3,19 +3,21 @@ import re
 import pyvisa
 import time
 
-KEITHLEY_2700_FUNCTIONS = [
-    "VOLT:DC",
-    "VOLT:AC",
-    "CURR:DC",
-    "CURR:AC",
-    "RES",
-    "FRES",
+from pyvisa import Resource
+
+# =========================
+# CONSTANTS
+# =========================
+
+# TODO: Continua con la integracion de query, write, scpi
+KEITHLEY_2700_FUNCTIONS = {
+    "VOLT:DC", "VOLT:AC",
+    "CURR:DC", "CURR:AC",
+    "RES", "FRES",
     "TEMP",
-    "FREQ",
-    "PER",
-    "CONT",
-    "FUNC"
-]
+    "FREQ", "PER",
+    "CONT"
+}
 
 SUPPORTED_AVG = [
     "VOLT:DC",
@@ -40,54 +42,121 @@ PARAM_MAP = {
 }
 
 
-def get_function_scpi_command(subsystem=None, function=None, value=None, channels=None):
+# =========================
+# STATIC FUNCTIONS
+# =========================
+
+# =========================
+# READ AND WRITE SCPI
+# =========================
+
+def get_function_scpi_command(
+    subsystem: str,
+    function: str,
+    value=None,
+    channels=None,
+    quoted: bool = False
+):
     """
-    Construye comando SCPI para seleccionar función de medida.
+    Construye comando SCPI genérico.
+
+    Ejemplos:
+        SENS:FUNC 'TEMP'
+        SENS:TEMP:NPLC 1
+        SENS:TEMP:AVER:STAT ON
+        SENS:TEMP:NPLC 1, (@101,102)
 
     :param subsystem: Ej: "SENS"
-    :param function: Ej: "VOLT:DC", "TEMP"
-    :param value: Valor opcional (ej: "ON", "OFF", etc.)
+    :param function: Ej: "FUNC", "TEMP:NPLC", "TEMP:AVER:STAT"
+    :param value: Valor opcional (ON/OFF, número, string...)
     :param channels: Lista de canales [101,102]
+    :param quoted: Si True, pone comillas en value (ej: 'TEMP')
     """
 
     if not subsystem:
         raise ValueError("Debes declarar el subsistema")
 
-    # if not function or function not in KEITHLEY_2700_FUNCTIONS:
-    #     raise ValueError(f"Función no válida: {function}")
+    if not function:
+        raise ValueError("Debes declarar la función")
 
-    function = function.upper()
     subsystem = subsystem.upper()
+    function = function.upper()
 
-    base_cmd = f"{subsystem}:{function}"
-    command = base_cmd
+    command = f"{subsystem}:{function}"
 
+    # ---- VALUE ----
     if value is not None:
         if isinstance(value, bool):
             value = "ON" if value else "OFF"
         else:
             value = str(value)
+
+        if quoted:
+            value = f"'{value}'"
+
         command += f" {value}"
 
-    # ---- Formateo de canales ----
+    # ---- CHANNEL LIST ----
     if channels is not None:
-        if not channels:
-            raise ValueError("channels no puede estar vacío")
-        if not all(isinstance(ch, int) for ch in channels):
-            raise ValueError("channels debe contener enteros")
-
-    clist_str = ""
-    if channels:
         if not isinstance(channels, (list, tuple)):
             raise ValueError("channels debe ser lista o tupla")
 
-        ch_str = ",".join(str(ch) for ch in channels)
-        clist_str = f" (@{ch_str})"
+        if not channels:
+            raise ValueError("channels no puede estar vacío")
 
-        command += clist_str
+        if not all(isinstance(ch, int) for ch in channels):
+            raise ValueError("channels debe contener enteros")
+
+        ch_str = ",".join(str(ch) for ch in channels)
+
+        # ⚠️ SCPI correcto → coma antes de clist
+        command += f", (@{ch_str})"
 
     return command
 
+def write_scpi(
+    inst: Resource,
+    subsystem: str,
+    function: str,
+    value=None,
+    channels=None,
+    quoted: bool = False,
+    debug: bool = False
+):
+    cmd = get_function_scpi_command(
+        subsystem=subsystem,
+        function=function,
+        value=value,
+        channels=channels,
+        quoted=quoted
+    )
+
+    if debug:
+        print(f"[SCPI WRITE] {cmd}")
+
+    inst.write(cmd)
+    return cmd
+
+def query_scpi(
+    inst: Resource,
+    subsystem: str,
+    function: str,
+    channels=None,
+    debug: bool = False
+):
+    if not function.endswith("?"):
+        function += "?"
+
+    cmd = get_function_scpi_command(
+        subsystem=subsystem,
+        function=function,
+        channels=channels
+    )
+
+    if debug:
+        print(f"[SCPI QUERY] {cmd}")
+
+    return inst.query(cmd)
 
 class Keithley2700:
     def __init__(self, gpib_card=0, gpib_address=14, timeout=10000):
@@ -103,12 +172,18 @@ class Keithley2700:
     # BASIC
     # =========================
     def idn(self):
+        """
+        Query instrument identification.
+        """
         return self.inst.query("*IDN?").strip()
 
     def reset(self):
+        """
+        Reset instrument to default state.
+        """
         self.inst.write("*RST")
 
-    def clear(self):
+    def clear_status(self):
         """
         Limpia el estado del instrumento.
 
@@ -121,9 +196,14 @@ class Keithley2700:
 
         # 2. Vaciar cola de errores completamente
         while True:
-            err = self.inst.query("SYST:ERR?").strip()
+            err = query_scpi(self.inst, "SYST", "ERR")
             if err.startswith("0"):
                 break
+
+    def get_error(self):
+        err = query_scpi(self.inst, "SYST", "ERR")
+        code, msg = err.split(",", 1)
+        return int(code), msg.strip('"')
 
     # =========================
     # INIT CONFIG
@@ -133,8 +213,7 @@ class Keithley2700:
         self.enable_auto_zero()
         cmd = get_function_scpi_command(subsystem="SENS",
                                         function="FUNC",
-                                        value='TEMP',
-                                        channels=[104, 105])
+                                        value='TEMP')
         self.inst.write(cmd)
 
     # =========================
@@ -173,9 +252,40 @@ class Keithley2700:
                                         value='ON')
         self.inst.write(cmd)
 
+
+    # =========================
+    # SENSE SUBSYSTEM
+    # =========================
     # =========================
     # FUNCTION CONFIGURATION
     # =========================
+
+    def set_function(self, function: str):
+        """
+        Set measurement function on Keithley 2700.
+
+        Parameters:
+            function (str): One of:
+                "VOLT:DC", "VOLT:AC",
+                "CURR:DC", "CURR:AC",
+                "RES", "FRES",
+                "TEMP",
+                "FREQ", "PER",
+                "CONT"
+        """
+
+        function = function.upper()
+
+        if function not in KEITHLEY_2700_FUNCTIONS:
+            raise ValueError(f"Función no válida: {function}")
+
+        self.inst.write(f"SENS:FUNC '{function}'")
+
+    def get_measure_function(self, clear_buffer=True):
+        if clear_buffer: self.inst.write("*CLS")
+        response = self.inst.query(":SENS:FUNC?")
+        function = response.strip().replace('"', '')
+        return function
 
     # =========================
     # CHANNEL CONTROL
@@ -310,11 +420,6 @@ class Keithley2700:
 
         return parsed
 
-    def get_measure_function(self, clear_buffer=True):
-        if clear_buffer: self.inst.write("*CLS")
-        response = self.inst.query(":SENS:FUNC?")
-        function = response.strip().replace('"', '')
-        return function
 
     # =========================
     # FILTER (simple)
@@ -363,7 +468,7 @@ class Keithley2700:
 
 def main():
     k2700 = Keithley2700()
-    k2700.clear()
+    k2700.clear_status()
     print(k2700.idn())
     print(k2700.read_esr())
     # cmd = get_function_scpi_command(subsystem="SENS",
@@ -396,7 +501,6 @@ def main():
     #                                 function="TEMP:FRTD:TYPE",
     #                                 value="PT100",
     #                                 channels=[104, 105])
-
 
 if __name__ == "__main__":
     main()
