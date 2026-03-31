@@ -1,5 +1,7 @@
 import pytest
-from drivers.keithley_2700 import Keithley2700, get_function_scpi_command
+
+from drivers.SCPIInstrument import get_function_scpi_command
+from drivers.keithley_2700 import Keithley2700
 
 
 @pytest.fixture(scope="module")

@@ -1,169 +1,22 @@
 import re
-
-import pyvisa
 import time
 
-from pyvisa import Resource
+from drivers.SCPIInstrument import SCPIInstrument, SUPPORTED_FUNCTIONS, SUPPORTED_TCON, SUPPORTED_AVG, \
+    SUPPORTED_TEMPERATURE_TRANSDUCERS, SUPPORTED_TCOUPLES, SUPPORTED_FRTDS
+
 
 # =========================
 # CONSTANTS
 # =========================
 
-# TODO: Continua con la integracion de query, write, scpi
-KEITHLEY_2700_FUNCTIONS = {
-    "VOLT:DC", "VOLT:AC",
-    "CURR:DC", "CURR:AC",
-    "RES", "FRES",
-    "TEMP",
-    "FREQ", "PER",
-    "CONT"
-}
-
-SUPPORTED_AVG = [
-    "VOLT:DC",
-    "VOLT:AC",
-    "CURR:DC",
-    "CURR:AC",
-    "RES",
-    "FRES",
-    "TEMP"
-]
-
-SUPPORTED_TCON = ["REP", "MOV"]  # Repeating / Moving
-
-PARAM_MAP = {
-    "nplc": "NPLC",
-    "range": "RANG",
-    "autorange": "RANG:AUTO",
-    "digits": "DIG",
-    "offset_comp": "OCOM",
-    "tran": "TRAN",
-    "frtd_type": "FRTD:TYPE"
-}
-
-
 # =========================
 # STATIC FUNCTIONS
 # =========================
 
-# =========================
-# READ AND WRITE SCPI
-# =========================
-
-def get_function_scpi_command(
-    subsystem: str,
-    function: str,
-    value=None,
-    channels=None,
-    quoted: bool = False
-):
-    """
-    Construye comando SCPI genérico.
-
-    Ejemplos:
-        SENS:FUNC 'TEMP'
-        SENS:TEMP:NPLC 1
-        SENS:TEMP:AVER:STAT ON
-        SENS:TEMP:NPLC 1, (@101,102)
-
-    :param subsystem: Ej: "SENS"
-    :param function: Ej: "FUNC", "TEMP:NPLC", "TEMP:AVER:STAT"
-    :param value: Valor opcional (ON/OFF, número, string...)
-    :param channels: Lista de canales [101,102]
-    :param quoted: Si True, pone comillas en value (ej: 'TEMP')
-    """
-
-    if not subsystem:
-        raise ValueError("Debes declarar el subsistema")
-
-    if not function:
-        raise ValueError("Debes declarar la función")
-
-    subsystem = subsystem.upper()
-    function = function.upper()
-
-    command = f"{subsystem}:{function}"
-
-    # ---- VALUE ----
-    if value is not None:
-        if isinstance(value, bool):
-            value = "ON" if value else "OFF"
-        else:
-            value = str(value)
-
-        if quoted:
-            value = f"'{value}'"
-
-        command += f" {value}"
-
-    # ---- CHANNEL LIST ----
-    if channels is not None:
-        if not isinstance(channels, (list, tuple)):
-            raise ValueError("channels debe ser lista o tupla")
-
-        if not channels:
-            raise ValueError("channels no puede estar vacío")
-
-        if not all(isinstance(ch, int) for ch in channels):
-            raise ValueError("channels debe contener enteros")
-
-        ch_str = ",".join(str(ch) for ch in channels)
-
-        # ⚠️ SCPI correcto → coma antes de clist
-        command += f", (@{ch_str})"
-
-    return command
-
-def write_scpi(
-    inst: Resource,
-    subsystem: str,
-    function: str,
-    value=None,
-    channels=None,
-    quoted: bool = False,
-    debug: bool = False
-):
-    cmd = get_function_scpi_command(
-        subsystem=subsystem,
-        function=function,
-        value=value,
-        channels=channels,
-        quoted=quoted
-    )
-
-    if debug:
-        print(f"[SCPI WRITE] {cmd}")
-
-    inst.write(cmd)
-    return cmd
-
-def query_scpi(
-    inst: Resource,
-    subsystem: str,
-    function: str,
-    channels=None,
-    debug: bool = False
-):
-    if not function.endswith("?"):
-        function += "?"
-
-    cmd = get_function_scpi_command(
-        subsystem=subsystem,
-        function=function,
-        channels=channels
-    )
-
-    if debug:
-        print(f"[SCPI QUERY] {cmd}")
-
-    return inst.query(cmd)
-
-class Keithley2700:
+class Keithley2700(SCPIInstrument):
     def __init__(self, gpib_card=0, gpib_address=14, timeout=10000):
         resource_name = "GPIB" + str(gpib_card) + "::" + str(gpib_address) + "::INSTR"
-        self.rm = pyvisa.ResourceManager()
-        self.inst = self.rm.open_resource(resource_name)
-        self.inst.timeout = timeout
+        super().__init__(resource_name, timeout)
         self.configure_output_format()
         self.enable_auto_zero()
         self.init_config()
@@ -171,91 +24,38 @@ class Keithley2700:
     # =========================
     # BASIC
     # =========================
-    def idn(self):
-        """
-        Query instrument identification.
-        """
-        return self.inst.query("*IDN?").strip()
-
-    def reset(self):
-        """
-        Reset instrument to default state.
-        """
-        self.inst.write("*RST")
-
-    def clear_status(self):
-        """
-        Limpia el estado del instrumento.
-
-        - Limpia registros de estado (*CLS)
-        - Vacía cola de errores (SYST:ERR?)
-        """
-
-        # 1. Clear estándar SCPI
-        self.inst.write("*CLS")
-
-        # 2. Vaciar cola de errores completamente
-        while True:
-            err = query_scpi(self.inst, "SYST", "ERR")
-            if err.startswith("0"):
-                break
-
-    def get_error(self):
-        err = query_scpi(self.inst, "SYST", "ERR")
-        code, msg = err.split(",", 1)
-        return int(code), msg.strip('"')
 
     # =========================
     # INIT CONFIG
     # =========================
-    #TODO: modificar esto, de momento no trabajaremos en modo scan
+    # TODO: modificar esto, de momento no trabajaremos en modo scan
     def init_config(self, function="TEMP", frtd_type="PT100", nplc=1):
         self.enable_auto_zero()
-        cmd = get_function_scpi_command(subsystem="SENS",
-                                        function="FUNC",
-                                        value='TEMP')
-        self.inst.write(cmd)
+        self.write_scpi(subsystem = "SENS",
+        function = "FUNC",
+        value = function)
+        self.write_scpi(subsystem='SENS', function='TEMP:FRTD:TYPE', value=frtd_type)
+        self.write_scpi(subsystem='SENS', function='TEMP:NPLC', value=nplc)
 
     # =========================
     # SYSTEM
     # =========================
-    def read_esr(self):
-        """
-        Lee el Standard Event Status Register (*ESR?).
-
-        Devuelve:
-            dict con los bits interpretados
-        """
-
-        response = self.inst.query("*ESR?").strip()
-
-        try:
-            esr = int(response)
-        except ValueError:
-            raise RuntimeError(f"Respuesta inválida de ESR: {response}")
-
-        return {
-            "raw": esr,
-            "operation_complete": bool(esr & 0b00000001),  # OPC
-            "request_control": bool(esr & 0b00000010),  # RQC
-            "query_error": bool(esr & 0b00000100),  # QYE
-            "device_dependent_error": bool(esr & 0b00001000),  # DDE
-            "execution_error": bool(esr & 0b00010000),  # EXE
-            "command_error": bool(esr & 0b00100000),  # CME
-            "user_request": bool(esr & 0b01000000),  # URQ
-            "power_on": bool(esr & 0b10000000),  # PON
-        }
 
     def enable_auto_zero(self):
-        cmd = get_function_scpi_command(subsystem="SYST",
-                                        function="AZER",
-                                        value='ON')
-        self.inst.write(cmd)
-
+        self.write_scpi(subsystem="SYST",
+                        function="AZER",
+                        value='ON')
 
     # =========================
     # SENSE SUBSYSTEM
     # =========================
+    def set_nplc(self, function='TEMP', nplc=1, channel_list=None):
+        self.write_scpi(subsystem="SENS", function=function, nplc=nplc, channels=channel_list)
+
+    def get_nplc(self):
+        function = self.get_function()
+        return self.query_scpi(subsystem="SENS", function=f"{function}:NPLC")
+
     # =========================
     # FUNCTION CONFIGURATION
     # =========================
@@ -276,25 +76,95 @@ class Keithley2700:
 
         function = function.upper()
 
-        if function not in KEITHLEY_2700_FUNCTIONS:
+        if function not in SUPPORTED_FUNCTIONS:
             raise ValueError(f"Función no válida: {function}")
 
-        self.inst.write(f"SENS:FUNC '{function}'")
+        self.write_scpi(subsystem="SENS", function="FUNC", value=function)
 
-    def get_measure_function(self, clear_buffer=True):
-        if clear_buffer: self.inst.write("*CLS")
-        response = self.inst.query(":SENS:FUNC?")
+    def get_function(self, clear_buffer=True):
+        """
+        Retrieve the currently selected measurement function from the Keithley 2700.
+
+        Optionally clears the instrument status and error queue before querying,
+        ensuring a clean state.
+
+        Parameters:
+            clear_buffer (bool, optional):
+                If True, execute clear_status_and_errors() before querying the function.
+                This clears the status registers and error queue.
+                Default is True.
+
+        Returns:
+            str:
+                Active measurement function (e.g., "TEMP", "VOLT:DC", "RES", etc.).
+
+        Notes:
+            - The function is returned without quotes.
+            - The query used is ":SENS:FUNC?".
+            - Clearing the buffer is recommended when you want to avoid
+              residual errors affecting subsequent operations.
+        """
+        if clear_buffer: self.clear_status_and_errors()
+        response = self.query_scpi(subsystem="SENS", function="FUNC")
         function = response.strip().replace('"', '')
         return function
+
+    # =========================
+    # TEMPERATURE SENSORS
+    # =========================
+    def configure_temperature_transducer(self, transducer_type=str, transducer_subtype=str, channels=None):
+        if transducer_subtype is None or transducer_subtype is None:
+            raise ValueError(f"Transducer type y transducer subtype deben ser valores str")
+        transducer_type = transducer_type.upper()
+        transducer_subtype = transducer_subtype.upper()
+        if transducer_type not in SUPPORTED_TEMPERATURE_TRANSDUCERS:
+            raise ValueError(f"Transducer no válido: {transducer_type}")
+        if transducer_type == "TC" and transducer_subtype not in SUPPORTED_TCOUPLES:
+            raise ValueError(f"Thermocouple no válida: {transducer_subtype}")
+        if transducer_type == "FRTD" and transducer_subtype not in SUPPORTED_FRTDS:
+            raise ValueError(f"FRTD no válida: {transducer_subtype}")
+        self.write_scpi(subsystem="SENS", function="TEMP:TRAN", value=transducer_type, channels=channels)
+        if transducer_type == "TC":
+            self.write_scpi(subsystem="SENS", function="TEMP:TC:TYPE", value=transducer_subtype, channels=channels)
+        if transducer_type == "FRTD":
+            self.write_scpi(subsystem="SENS", function="TEMP:FRTD:TYPE", value=transducer_subtype, channels=channels)
 
     # =========================
     # CHANNEL CONTROL
     # =========================
     def close_channel(self, channel):
-        self.inst.write(f"ROUT:CLOS (@{channel})")
+        """
+        Close (connect) one or more channels on the Keithley 2700 scanner.
+
+        This command closes the specified channel(s), allowing the signal
+        to pass through the internal multiplexer.
+
+        Parameters:
+            channel (int | list[int]):
+                Channel number or list of channel numbers to close.
+                Example: 101 or [101, 102]
+
+        Notes:
+            - SCPI command used: "ROUT:CLOS (@<channel_list>)"
+            - Closing a channel connects it to the measurement path.
+            - Multiple channels can be closed simultaneously.
+            - Ensure channels belong to a valid installed multiplexer card (e.g., 7700).
+        """
+        self.write_scpi(subsystem="ROUT", function="CLOS", channels=channel)
 
     def open_all_channels(self):
-        self.inst.write("ROUT:OPEN:ALL")
+        """
+        Open (disconnect) all channels on the Keithley 2700 scanner.
+
+        This command opens every channel in the internal multiplexer,
+        ensuring no connections remain active.
+
+        Notes:
+            - SCPI command used: "ROUT:OPEN:ALL"
+            - Typically used to reset the switching state before a new measurement.
+            - Recommended before configuring or starting a scan sequence.
+        """
+        self.write_scpi(subsystem="ROUT", function="OPEN:ALL")
 
     # =========================
     # FORMAT
@@ -309,6 +179,46 @@ class Keithley2700:
             channel=False,
             reading_number=False
     ):
+        """
+        Configura el formato de salida de las lecturas del instrumento mediante
+        el comando SCPI `FORM:ELEM`.
+
+        Permite seleccionar qué elementos se incluirán en cada lectura devuelta
+        por el equipo (por ejemplo, valor medido, tiempo, unidad, etc.).
+
+        Parámetros
+        ----------
+        read : bool, opcional
+            Incluye el valor de la medida (READ). Por defecto True.
+        time : bool, opcional
+            Incluye la marca de tiempo de la lectura (TIME). Por defecto False.
+        unit : bool, opcional
+            Incluye la unidad de la medida (UNIT). Por defecto False.
+        status : bool, opcional
+            Incluye el estado de la medida (STAT). Por defecto False.
+        channel : bool, opcional
+            Incluye el canal de adquisición (CHAN). Por defecto False.
+        reading_number : bool, opcional
+            Incluye el número de lectura (NUM). Por defecto False.
+
+        Excepciones
+        -----------
+        ValueError
+            Se lanza si no se selecciona ningún elemento de salida.
+
+        Notas
+        -----
+        - El comando generado sigue el formato: `FORM:ELEM <element1>,<element2>,...`
+        - El orden de los elementos es el mismo en que se añaden internamente.
+        - Esta configuración afecta a cómo se devuelven los datos en lecturas
+          posteriores del instrumento.
+
+        Ejemplo
+        -------
+        >>> configure_output_format(read=True, time=True, unit=True)
+        # Envía: FORM:ELEM READ,TIME,UNIT
+        """
+
         elements = []
 
         if read:
@@ -327,15 +237,15 @@ class Keithley2700:
         if not elements:
             raise ValueError("At least one output element must be selected")
 
-        cmd = "FORM:ELEM " + ",".join(elements)
-        self.inst.write(cmd)
+        value = ",".join(elements)
+        self.write_scpi(subsystem="FORM", function="ELEM", value=value)
 
     # =========================
     # MEASURE
     # =========================
     def read(self):
-        self.inst.write("*CLS")
-        return self._parse_reading(self.inst.query("READ?"))
+        self.clear_status_and_errors()
+        return self._parse_reading(self.query("READ?"))
 
     def read_channel(self, channel, delay=0.05):
         self.open_all_channels()
@@ -420,87 +330,133 @@ class Keithley2700:
 
         return parsed
 
-
     # =========================
     # FILTER (simple)
     # =========================
-    #TODO: Repasar
     def enable_averaging(self, function='TEMP', count=5, tcontrol='REP', window=None):
-        if function not in KEITHLEY_2700_FUNCTIONS:
+        """
+        Activa y configura el promediado (averaging) de medidas en el instrumento
+        mediante comandos SCPI del subsistema `SENS:AVER`.
+
+        Permite definir el número de muestras a promediar, el tipo de control
+        del promedio y, opcionalmente, la ventana en modo móvil.
+
+        Parámetros
+        ----------
+        function : str, opcional
+            Función de medida sobre la que se aplica el averaging (por ejemplo,
+            'VOLT', 'CURR', 'RES', 'TEMP', etc.). Debe pertenecer a
+            `KEITHLEY_2700_FUNCTIONS` y estar soportada en `SUPPORTED_AVG`.
+            Por defecto 'TEMP'.
+
+        count : int, opcional
+            Número de muestras utilizadas para el promedio (`AVER:COUN`).
+            Por defecto 5.
+
+        tcontrol : str, opcional
+            Tipo de control del promedio (`AVER:TCON`):
+            - 'REP' (Repetitive): promedio sobre un bloque fijo de muestras.
+            - 'MOV' (Moving): promedio móvil continuo.
+            Por defecto 'REP'.
+
+        window : int o float, opcional
+            Tamaño de la ventana para el promedio móvil (`AVER:WIND`).
+            Solo aplicable cuando `tcontrol='MOV'`.
+
+        Excepciones
+        -----------
+        ValueError
+            - Si la función no es válida o no soporta averaging.
+            - Si `tcontrol` no es 'REP' ni 'MOV'.
+            - Si se especifica `window` cuando `tcontrol` no es 'MOV'.
+
+        Notas
+        -----
+        - Activa el averaging con `SENS:AVER:STAT ON`.
+        - Configura el número de muestras con `SENS:AVER:COUN`.
+        - El comportamiento del promedio depende del modo seleccionado:
+            * REP: calcula el promedio tras adquirir `count` muestras.
+            * MOV: actualiza el promedio continuamente con una ventana deslizante.
+        - La configuración afecta a las lecturas posteriores del instrumento.
+
+        Ejemplos
+        --------
+        -> enable_averaging(function='TEMP', count=10)
+        # Averaging repetitivo de 10 muestras
+
+        -> enable_averaging(function='VOLT', count=5, tcontrol='MOV', window=5)
+        # Promedio móvil con ventana de 5 muestras con window = 5% del rango
+        """
+        if function not in SUPPORTED_FUNCTIONS:
             raise ValueError(f"Función no válida: {function}")
 
         if function not in SUPPORTED_AVG:
             raise ValueError(f"Averaging no soportado para: {function}")
 
-        self.inst.write(f"SENS:{function}:AVER:STAT ON")
-        self.inst.write(f"SENS:{function}:AVER:COUN {count}")
+        self.write_scpi(subsystem="SENS", function=f"{function}:AVER:STAT", value="ON")
+        self.write_scpi(subsystem="SENS", function=f"{function}:AVER:COUN", value=count)
 
         # Tipo de control (REP o MOV)
         if tcontrol is not None:
             tcontrol = tcontrol.upper()
             if tcontrol not in SUPPORTED_TCON:
                 raise ValueError(f"TCON inválido: {tcontrol} (usa REP o MOV)")
-
-            self.inst.write(f"SENS:{function}:AVER:TCON {tcontrol}")
+            self.write_scpi(subsystem="SENS", function=f"{function}:AVER:TCON", value=tcontrol)
 
         # Window solo tiene sentido con MOV
         if window is not None:
             if tcontrol != "MOV":
                 raise ValueError("WINDOW solo es válido cuando TCON = MOV")
+            self.write_scpi(subsystem="SENS", function=f"{function}:AVER:WIND", value=window)
 
-            self.inst.write(f"SENS:{function}:AVER:WIND {window}")
+    def disable_averaging(self, function=None):
+        """
+        Desactiva el promediado (averaging) para una función de medida específica
+        del instrumento mediante el comando SCPI correspondiente.
 
-    def disable_averaging(self, function):
-        if function not in KEITHLEY_2700_FUNCTIONS:
+        Parámetros
+        ----------
+        function : str
+            Función de medida sobre la que se desea desactivar el averaging
+            (por ejemplo, 'VOLT', 'CURR', 'RES', 'TEMP', etc.).
+            Debe pertenecer a `KEITHLEY_2700_FUNCTIONS` y estar soportada en
+            `SUPPORTED_AVG`.
+
+        Excepciones
+        -----------
+        ValueError
+            - Si la función no es válida.
+            - Si la función no soporta averaging.
+
+        Notas
+        -----
+        - Envía el comando SCPI: `SENS:<function>:AVER:STAT OFF`.
+        - La desactivación del averaging afecta únicamente a la función indicada.
+        - Asegúrate de que la función coincide con la configuración activa
+          del instrumento para evitar inconsistencias en las medidas.
+
+        Ejemplo
+        -------
+        -> disable_averaging('TEMP')
+        # Envía: SENS:TEMP:AVER:STAT OFF
+        """
+        if function is None:
+            function = self.get_function()
+
+        if function not in SUPPORTED_FUNCTIONS:
             raise ValueError(f"Función no válida: {function}")
 
         if function not in SUPPORTED_AVG:
             raise ValueError(f"Averaging no soportado para: {function}")
 
-        self.inst.write(f"SENS:{function}:AVER:STAT OFF")
-
-    # =========================
-    # CLOSE
-    # =========================
-    def close(self):
-        self.inst.close()
+        self.write_scpi(subsystem="SENS", function=f"{function}:AVER:STAT", value="OFF")
 
 
 def main():
     k2700 = Keithley2700()
-    k2700.clear_status()
+    k2700.clear_status_and_errors()
     print(k2700.idn())
     print(k2700.read_esr())
-    # cmd = get_function_scpi_command(subsystem="SENS",
-    #                                 function="FUNC",
-    #                                 value='TEMP',
-    #                                 channels=[104, 105])
-    # k2700.inst.write(cmd)
-    # print(k2700.read_esr())
-
-    # cmd = get_function_scpi_command(subsystem="SENS",
-    #                                 function="TEMP:NPLC",
-    #                                 value=1,
-    #                                 channels=[104, 105])
-    #
-    # cmd = get_function_scpi_command(subsystem="SENS",
-    #                                 function="TEMP:AVER:TCON",
-    #                                 value="REP")
-    #
-    # cmd = get_function_scpi_command(subsystem="SENS",
-    #                                 function="TEMP:AVER:COUN",
-    #                                 value=2,
-    #                                 channels=[104, 105])
-    #
-    # cmd = get_function_scpi_command(subsystem="SENS",
-    #                                 function="TEMP:TRAN",
-    #                                 value="FRTD",
-    #                                 channels=[104, 105])
-    #
-    # cmd = get_function_scpi_command(subsystem="SENS",
-    #                                 function="TEMP:FRTD:TYPE",
-    #                                 value="PT100",
-    #                                 channels=[104, 105])
 
 if __name__ == "__main__":
     main()

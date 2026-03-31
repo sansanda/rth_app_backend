@@ -1,12 +1,9 @@
 import json
-import time
-import random
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
-from drivers import keithley_2700
-from drivers.keithley_2700 import Keithley2700, KEITHLEY_2700_FUNCTIONS
+from drivers.keithley_2700 import Keithley2700
 from pydantic import BaseModel, Field
 from typing import Literal, Optional
 
@@ -33,16 +30,19 @@ class TemperatureConfigRequest(BaseModel):
 # init una vez (solo si no estás en debug)
 @app.on_event("startup")
 def startup_event():
+    # config por defecto (si quieres mantenerla)
+    cfg_dict = load_default_config()["multimeter_setup"]["temperature"]
+    cfg = TemperatureConfigRequest(**cfg_dict)
+
     if not DEBUG:
         app.state.k2700 = Keithley2700()
         app.state.k2700.reset()
-
-        # config por defecto (si quieres mantenerla)
-        cfg_dict = load_default_config()["multimeter_setup"]["temperature"]
-        cfg = TemperatureConfigRequest(**cfg_dict)
-
         print("Applying temperature config:", cfg.model_dump())
         apply_temperature_config(app.state.k2700, cfg)
+    else:
+        print("In DEBUG Mode:\n")
+        print("Readed temperature config:", cfg.model_dump())
+
 
 @app.get("/", response_class=HTMLResponse)
 def root():
@@ -89,7 +89,7 @@ def root():
 @app.get("/idn")
 async def get_idn():
     if DEBUG:
-        return {"idn": "FAKE,KEITHLEY,2700,0.0"}
+        return {"idn": "In DEBUG Mode --> FAKE,KEITHLEY,2700,0.0"}
 
     return {"idn": app.state.k2700.idn()}
 
@@ -261,7 +261,7 @@ def configure_temperature(cfg: TemperatureConfigRequest, request: Request):
         - MOV filter requires a window parameter to be meaningful.
     """
     if DEBUG:
-        return {"status": "fake", "config": cfg.model_dump()}
+        return {"In DEBUG Mode --> status": "fake", "config": cfg.model_dump()}
 
     k2700 = request.app.state.k2700
     apply_temperature_config(k2700, cfg)
@@ -286,19 +286,20 @@ def apply_temperature_config(k2700, cfg: TemperatureConfigRequest):
         cfg (TemperatureConfigRequest): validated config
     """
 
+    function = "TEMP"
     # 1. Seleccionar función
-    k2700.set_function("TEMP")
+    k2700.set_function(function)
 
     # 2. Configurar sensor
     if cfg.sensor:
-        k2700.configure_temperature_sensor(
+        k2700.configure_temperature_transducer(
             sensor_type=cfg.sensor.type,
             sensor_subtype=cfg.sensor.subtype
         )
 
     # 3. Configurar NPLC
     if cfg.nplc is not None:
-        k2700.inst.write(f"SENS:TEMP:NPLC {cfg.nplc}")
+        k2700.set_nplc(function=function, nplc=cfg.nplc)
 
     # 4. Configurar averaging
     if cfg.averaging:
