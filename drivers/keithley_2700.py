@@ -3,6 +3,7 @@ import time
 
 from drivers.SCPIInstrument import SCPIInstrument, SUPPORTED_FUNCTIONS, SUPPORTED_TCON, SUPPORTED_AVG, \
     SUPPORTED_TEMPERATURE_TRANSDUCERS, SUPPORTED_TCOUPLES, SUPPORTED_FRTDS
+from models.configuration_models import MultimeterConfig, GPIBConfig
 
 
 # =========================
@@ -26,16 +27,81 @@ class Keithley2700(SCPIInstrument):
     # =========================
 
     # =========================
-    # INIT CONFIG
+    # CONFIG
     # =========================
     # TODO: modificar esto, de momento no trabajaremos en modo scan
     def init_config(self, function="TEMP", frtd_type="PT100", nplc=1):
         self.enable_auto_zero()
-        self.write_scpi(subsystem = "SENS",
-        function = "FUNC",
-        value = function)
+        self.write_scpi(subsystem = "SENS",function = "FUNC", value = function)
         self.write_scpi(subsystem='SENS', function='TEMP:FRTD:TYPE', value=frtd_type)
         self.write_scpi(subsystem='SENS', function='TEMP:NPLC', value=nplc)
+
+    def configure(self, cfg: MultimeterConfig):
+        """
+        Apply full multimeter configuration.
+        """
+
+        # -------------------------
+        # 1. GPIB (CRÍTICO)
+        # -------------------------
+        gpib_cfg = cfg.gpib
+
+        current_resource = self.inst.resource_name
+        new_resource = "GPIB" + str(gpib_cfg.gpib_card) + "::" + str(gpib_cfg.address) + "::INSTR"
+
+        # solo reconectar si cambia dirección
+        if current_resource != new_resource:
+            self.reconnect(
+                resource_name=new_resource,
+                timeout_ms=gpib_cfg.timeout_ms
+            )
+        else:
+            # solo actualizar timeout
+            self.inst.timeout = gpib_cfg.timeout_ms
+
+        # -------------------------
+        # 2. TEMPERATURE
+        # -------------------------
+        temp_cfg = cfg.temperature
+
+        function = "TEMP"
+        self.set_function(function)
+
+        if temp_cfg.sensor:
+            self.configure_temperature_transducer(
+                transducer_type=temp_cfg.sensor.type,
+                transducer_subtype=temp_cfg.sensor.subtype
+            )
+
+        if temp_cfg.measure.nplc:
+            self.set_nplc(function=function, nplc=temp_cfg.measure.nplc)
+
+        if temp_cfg.measure.measurement_resolution:
+            self.set_measurement_resolution(function=function, n_digits=temp_cfg.measure.measurement_resolution)
+
+        if temp_cfg.averaging:
+            avg = temp_cfg.averaging
+
+            if avg.enabled:
+                self.enable_averaging(
+                    function=function,
+                    count=avg.count,
+                    tcontrol=avg.type,
+                    window=avg.window
+                )
+            else:
+                self.disable_averaging(function)
+
+        # -------------------------
+        # 3. CHANNELS
+        # -------------------------
+        enabled_channels = [
+            ch.channel for ch in temp_cfg.channels.values() if ch.enabled
+        ]
+
+        if enabled_channels:
+            self.set_scan_channels(enabled_channels)
+
 
     # =========================
     # SYSTEM
@@ -49,12 +115,19 @@ class Keithley2700(SCPIInstrument):
     # =========================
     # SENSE SUBSYSTEM
     # =========================
-    def set_nplc(self, function='TEMP', nplc=1, channel_list=None):
-        self.write_scpi(subsystem="SENS", function=function, nplc=nplc, channels=channel_list)
+    def set_nplc(self, function='TEMP:NPLC', nplc=1.0, channel_list=None):
+        self.write_scpi(subsystem="SENS", function=function, value=nplc, channels=channel_list)
 
-    def get_nplc(self):
+    def get_nplc(self, channel_list=None):
         function = self.get_function()
-        return self.query_scpi(subsystem="SENS", function=f"{function}:NPLC")
+        return self.query_scpi(subsystem="SENS", function=f"{function}:NPLC", channels=channel_list)
+
+    def set_measurement_resolution(self, function='TEMP:DIG', n_digits=6, channel_list=None):
+        self.write_scpi(subsystem="SENS", function=function, value=n_digits, channels=channel_list)
+
+    def get_measurement_resolution(self, channel_list=None):
+        function = self.get_function()
+        return self.query_scpi(subsystem="SENS", function=f"{function}:DIG", channels=channel_list)
 
     # =========================
     # FUNCTION CONFIGURATION
@@ -81,7 +154,7 @@ class Keithley2700(SCPIInstrument):
 
         self.write_scpi(subsystem="SENS", function="FUNC", value=function)
 
-    def get_function(self, clear_buffer=True):
+    def get_function(self, clear_buffer=True, channel_list=None):
         """
         Retrieve the currently selected measurement function from the Keithley 2700.
 
@@ -105,14 +178,14 @@ class Keithley2700(SCPIInstrument):
               residual errors affecting subsequent operations.
         """
         if clear_buffer: self.clear_status_and_errors()
-        response = self.query_scpi(subsystem="SENS", function="FUNC")
+        response = self.query_scpi(subsystem="SENS", function="FUNC", channels=channel_list)
         function = response.strip().replace('"', '')
         return function
 
     # =========================
     # TEMPERATURE SENSORS
     # =========================
-    def configure_temperature_transducer(self, transducer_type=str, transducer_subtype=str, channels=None):
+    def configure_temperature_transducer(self, transducer_type='FRTD', transducer_subtype='PT100', channels=None):
         if transducer_subtype is None or transducer_subtype is None:
             raise ValueError(f"Transducer type y transducer subtype deben ser valores str")
         transducer_type = transducer_type.upper()

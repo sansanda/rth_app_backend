@@ -90,6 +90,19 @@ class SCPIInstrument:
         self.inst: Resource = self.rm.open_resource(resource_name)
         self.inst.timeout = timeout
 
+    def reconnect(self, resource_name: str, timeout_ms: int):
+        """
+        Reconnect to instrument with new GPIB address and timeout.
+        """
+        # cerrar conexión actual
+        try:
+            self.close()
+        except Exception:
+            pass
+
+        self.inst = self.rm.open_resource(resource_name)
+        self.inst.timeout = timeout_ms
+
     # =========================
     # LOW LEVEL
     # =========================
