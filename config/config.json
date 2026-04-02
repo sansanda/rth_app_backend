@@ -51,13 +51,14 @@
     },
     "source": {
       "mode": "CURRENT",
-      "current": 0.0,
-      "voltage_compliance": 63,
+      "range": 1.0,
+      "value": 0.0,
+      "compliance": 63,
       "delay_ms": 1000
     },
     "measure": {
       "mode": "VOLT",
-      "range_volts": 100,
+      "range": 100,
       "nplc": 1,
       "timestamps": true
     },
@@ -75,7 +76,7 @@
     },
     "temperature": {
       "unit": "C",
-      "max": 55
+      "max": 55.0
     }
   },
   "process_setup": {
@@ -84,21 +85,21 @@
       "test_multimeter": true,
       "test_source_meter": true,
       "notify": {
-        "enabled": true,
+        "enabled": false,
         "phone_number": "661290548"
       }
     },
     "temperature_ramp_up": {
       "unit": "C",
-      "target_temperature": 55,
-      "duration_min": 5
+      "target_temperature": 55.0,
+      "duration_min": 5.0
     },
     "temperature_stabilization": {
-      "duration_min": 15
+      "duration_min": 15.0
     },
     "measurement": {
       "num_measures": 15,
-      "sample_period_s": 120,
+      "sample_period_s": 120.0,
       "channel_delay_ms": 100,
       "channels": [
         "top",
@@ -106,7 +107,7 @@
       ]
     },
     "temperature_ramp_down": {
-      "duration_min": 15
+      "duration_min": 15.0
     },
     "end": {
       "notify": {
@@ -121,16 +122,16 @@
   },
   "measure_results": {
     "enabled": true,
-    "mode": "append",
     "file": {
       "name": "rth",
-      "format": "csv",
+      "format": "dat",
       "path": ".",
       "include_timestamp": true
     },
     "autosave": {
       "enabled": true,
-      "period_min": 1
+      "period_min": 2,
+      "mode": "append"
     }
   }
 }

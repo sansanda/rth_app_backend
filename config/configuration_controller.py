@@ -2,7 +2,7 @@ from pathlib import Path
 import json
 from typing import Optional
 
-from models.configuration_models import MultimeterConfig
+from models.configuration_models import MultimeterConfig, SourceMeterConfig, LimitsConfig, ProcessConfig, MeasureResultsConfig
 
 
 class ConfigurationController:
@@ -94,6 +94,66 @@ class ConfigurationController:
             raise ValueError("Missing 'multimeter_setup' in config")
 
         return MultimeterConfig(**data)
+
+    # -------------------------
+    # SourceMeter
+    # -------------------------
+
+    def get_sourcemeter_config(self) -> SourceMeterConfig:
+        """
+        Return full sourcemeter configuration as a validated model.
+        """
+        data = self._config_data.get("source_meter_setup")
+
+        if data is None:
+            raise ValueError("Missing 'sourcemeter_setup' in config")
+
+        return SourceMeterConfig(**data)
+
+    # -------------------------
+    # Limits
+    # -------------------------
+
+    def get_limits_config(self) -> LimitsConfig:
+        """
+        Return full limits configuration as a validated model.
+        """
+        data = self._config_data.get("limits_setup")
+
+        if data is None:
+            raise ValueError("Missing 'limits_setup' in config")
+
+        return LimitsConfig(**data)
+
+    # -------------------------
+    # Process
+    # -------------------------
+
+    def get_process_config(self) -> ProcessConfig:
+        """
+        Return full process configuration as a validated model.
+        """
+        data = self._config_data.get("process_setup")
+
+        if data is None:
+            raise ValueError("Missing 'process_setup' in config")
+
+        return ProcessConfig(**data)
+
+    # -------------------------
+    # Measure Results
+    # -------------------------
+
+    def get_measure_results_config(self) -> MeasureResultsConfig:
+        """
+        Return full measure-results configuration as a validated model.
+        """
+        data = self._config_data.get("measure_results")
+
+        if data is None:
+            raise ValueError("Missing 'measure_results' in config")
+
+        return MeasureResultsConfig(**data)
 
     # -------------------------
     # Helpers (opcionales pero útiles)

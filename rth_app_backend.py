@@ -1,8 +1,10 @@
 import logging
+from time import sleep
+
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
 from config.configuration_controller import ConfigurationController
-from models.configuration_models import MultimeterConfig
+from models.configuration_models import MultimeterConfig, SourceMeterConfig, LimitsConfig, ProcessConfig, MeasureResultsConfig
 from drivers.keithley_2700 import Keithley2700
 from process.process_controller import ProcessController
 
@@ -120,6 +122,11 @@ def status():
 # **************************************************
 # Configuracion previa del proceso de medida
 # **************************************************
+
+# **************************************************
+# MULTIMETER
+# **************************************************
+
 @app.post("/multimeter/config")
 def configure_multimeter(cfg: MultimeterConfig):
     """
@@ -147,5 +154,104 @@ def configure_multimeter(cfg: MultimeterConfig):
         logger.info(
             f"{configure_multimeter.__name__} - DEBUG MODE → config updated (no instrument comms)"
         )
-
     return {"status": "ok", "config": data}
+
+# **************************************************
+# SOURCEMETER
+# **************************************************
+@app.post("/sourcemeter/config")
+def configure_sourcemeter(cfg: SourceMeterConfig):
+    """
+    Configure the sourcemeter settings and persist them to config file.
+    """
+
+    data = cfg.model_dump()
+
+    # guardar config
+    configuration_controller.update_config_section("source_meter_setup", data)
+    sourcemeter_config = configuration_controller.get_sourcemeter_config()
+
+    if not DEBUG:
+        try:
+            # TODO: Implementar classe k2430
+            # app.state.k2430.configure(sourcemeter_config)
+            pass
+        except Exception as e:
+            logger.exception("Error configuring sourcemeter")
+
+            return {
+                "status": "error",
+                "message": str(e)
+            }
+    else:
+        logger.info(f"{configure_sourcemeter.__name__} received configuration data --> {data} ")
+        logger.info(
+            f"{configure_sourcemeter.__name__} - DEBUG MODE → config updated (no instrument comms)"
+        )
+    return {"status": "ok", "config": data}
+
+# **************************************************
+# LIMITS
+# **************************************************
+@app.post("/limits/config")
+def configure_limits(cfg: LimitsConfig):
+    """
+    Configure the limits settings and persist them to config file.
+    """
+    try:
+        # obtenemos el diccionario con la configuracion de limits
+        data = cfg.model_dump()
+        logger.info(f"{configure_limits.__name__} received configuration data --> {data} ")
+        # guardar config
+        configuration_controller.update_config_section("limits_setup", data)
+        return {"status": "ok", "config": data}
+    except Exception as e:
+        logger.exception("Error configuring limits")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+# **************************************************
+# PROCESS
+# **************************************************
+@app.post("/process/config")
+def configure_process(cfg: ProcessConfig):
+    """
+    Configure the process settings and persist them to config file.
+    """
+    try:
+        # obtenemos el diccionario con la configuracion de process
+        data = cfg.model_dump()
+        logger.info(f"{configure_process.__name__} received configuration data --> {data} ")
+        # guardar config
+        configuration_controller.update_config_section("process_setup", data)
+        return {"status": "ok", "config": data}
+    except Exception as e:
+        logger.exception("Error configuring process")
+        return {
+            "status": "error",
+            "message": str(e)
+        }
+
+# **************************************************
+# MEASURE-RESULTS
+# **************************************************
+@app.post("/measure-results/config")
+def configure_measure_results(cfg: MeasureResultsConfig):
+    """
+    Configure the measure results settings and persist them to config file.
+    """
+    try:
+        # obtenemos el diccionario con la configuracion de measure results
+        data = cfg.model_dump()
+        logger.info(f"{configure_measure_results.__name__} received configuration data --> {data} ")
+        # guardar config
+        configuration_controller.update_config_section("measure_results", data)
+        return {"status": "ok", "config": data}
+    except Exception as e:
+        logger.exception("Error configuring measure results")
+        return {
+            "status": "error",
+            "message": str(e)
+        }

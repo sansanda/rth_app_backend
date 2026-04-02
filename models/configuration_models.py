@@ -232,7 +232,7 @@ class FileConfig(BaseModel):
     File output configuration for measurement results.
     """
     name: str
-    format: Literal["csv", "json"] = "csv"
+    format: Literal["csv", "json", "dat"] = "csv"
     path: str = "."
     include_timestamp: bool = True
 
@@ -241,14 +241,14 @@ class AutoSaveConfig(BaseModel):
     Autosave configuration for periodic data persistence.
     """
     enabled: bool = True
-    period_min: float = Field(..., gt=0)
+    period_min: int = Field(..., gt=0)
+    mode: Literal["append", "overwrite"] = "append"
 
 class MeasureResultsConfig(BaseModel):
     """
     Configuration for storing measurement results.
     """
     enabled: bool = True
-    mode: Literal["append", "overwrite"] = "append"
     file: FileConfig
     autosave: AutoSaveConfig
 
