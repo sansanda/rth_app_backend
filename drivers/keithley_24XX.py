@@ -3,7 +3,7 @@ import time
 
 from drivers.SCPIInstrument import SCPIInstrument, SUPPORTED_FUNCTIONS, SUPPORTED_TCON, SUPPORTED_AVG, \
     SUPPORTED_TEMPERATURE_TRANSDUCERS, SUPPORTED_TCOUPLES, SUPPORTED_FRTDS
-from models.configuration_models import MultimeterConfig, GPIBConfig
+from models.configuration_models import SourceMeterConfig
 
 
 # =========================
@@ -14,8 +14,8 @@ from models.configuration_models import MultimeterConfig, GPIBConfig
 # STATIC FUNCTIONS
 # =========================
 
-class Keithley2700(SCPIInstrument):
-    def __init__(self, gpib_card=0, gpib_address=16, timeout=10000):
+class Keithley24XX(SCPIInstrument):
+    def __init__(self, gpib_card=0, gpib_address=17, timeout=10000):
         resource_name = "GPIB" + str(gpib_card) + "::" + str(gpib_address) + "::INSTR"
         super().__init__(resource_name, timeout)
         self.configure_output_format()
@@ -36,7 +36,7 @@ class Keithley2700(SCPIInstrument):
         self.write_scpi(subsystem='SENS', function='TEMP:FRTD:TYPE', value=frtd_type)
         self.write_scpi(subsystem='SENS', function='TEMP:NPLC', value=nplc)
 
-    def configure(self, cfg: MultimeterConfig):
+    def configure(self, cfg: SourceMeterConfig):
         """
         Apply full multimeter configuration.
         """
