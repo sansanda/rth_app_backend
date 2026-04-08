@@ -122,7 +122,7 @@ class SCPIInstrument:
             print(f"[WRITE] {cmd}")
         self.inst.write(cmd)
 
-    def query(self, cmd: str, debug: bool = False) -> str:
+    def query(self, cmd: str, debug: bool = True) -> str:
         """
         Envía una query al instrumento y devuelve la respuesta.
 
@@ -153,7 +153,8 @@ class SCPIInstrument:
             value=None,
             channels=None,
             quoted: bool = False,
-            debug: bool = False
+            debug: bool = True,
+            check_esr: bool = True
     ):
         """
         Construye y envía un comando SCPI.
@@ -169,6 +170,12 @@ class SCPIInstrument:
         )
 
         self.write(cmd, debug=debug)
+
+        if check_esr :
+            esr = self.read_esr()
+            if esr["command_error"] or esr["execution_error"]:
+                raise RuntimeError(f"Error SCPI detectado: {esr} en comando {cmd}")
+
         return cmd
 
     def query_scpi(
@@ -203,6 +210,10 @@ class SCPIInstrument:
     def reset(self):
         """Resetea el instrumento (*RST)."""
         self.write("*RST")
+
+    def clear(self):
+        """Clear all messages from Error Queue (*CLS)."""
+        self.write("*CLS")
 
     def clear_status_and_errors(self):
         """
@@ -327,15 +338,16 @@ def get_function_scpi_command(
         if not isinstance(channels, (list, tuple)):
             raise ValueError("channels debe ser int, lista o tupla")
 
+        ch_str = ""
         if not channels:
-            raise ValueError("channels no puede estar vacío")
-
-        if not all(isinstance(ch, int) for ch in channels):
+            # "Case empty list"
+            pass
+        elif not all(isinstance(ch, int) for ch in channels):
             raise ValueError("channels debe contener enteros")
-
-        ch_str = ",".join(str(ch) for ch in channels)
+        else:
+            ch_str = ",".join(str(ch) for ch in channels)
 
         # ⚠️ SCPI correcto → coma antes de clist
-        command += f", (@{ch_str})"
+        command += f" (@{ch_str})"
 
     return command
