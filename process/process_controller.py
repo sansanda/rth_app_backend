@@ -9,6 +9,7 @@ logging.basicConfig(
 
 logger = logging.getLogger("ProcessController")
 
+
 class ProcessController:
     def __init__(self):
         logger.info("ProcessController initiated")

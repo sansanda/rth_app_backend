@@ -32,7 +32,7 @@ class Keithley24XX(SCPIInstrument):
     # TODO: modificar esto, de momento no trabajaremos en modo scan
     def init_config(self, function="TEMP", frtd_type="PT100", nplc=1):
         self.enable_auto_zero()
-        self.write_scpi(subsystem = "SENS",function = "FUNC", value = function)
+        self.write_scpi(subsystem="SENS", function="FUNC", value=function)
         self.write_scpi(subsystem='SENS', function='TEMP:FRTD:TYPE', value=frtd_type)
         self.write_scpi(subsystem='SENS', function='TEMP:NPLC', value=nplc)
 
@@ -102,7 +102,6 @@ class Keithley24XX(SCPIInstrument):
         if enabled_channels:
             self.set_scan_channels(enabled_channels)
 
-
     # =========================
     # SYSTEM
     # =========================
@@ -155,29 +154,6 @@ class Keithley24XX(SCPIInstrument):
         self.write_scpi(subsystem="SENS", function="FUNC", value=function)
 
     def get_function(self, clear_buffer=True, channel_list=None):
-        """
-        Retrieve the currently selected measurement function from the Keithley 2700.
-
-        Optionally clears the instrument status and error queue before querying,
-        ensuring a clean state.
-
-        Parameters:
-            clear_buffer (bool, optional):
-                If True, execute clear_status_and_errors() before querying the function.
-                This clears the status registers and error queue.
-                Default is True.
-
-        Returns:
-            str:
-                Active measurement function (e.g., "TEMP", "VOLT:DC", "RES", etc.).
-
-        Notes:
-            - The function is returned without quotes.
-            - The query used is ":SENS:FUNC?".
-            - Clearing the buffer is recommended when you want to avoid
-              residual errors affecting subsequent operations.
-        """
-        if clear_buffer: self.clear_status_and_errors()
         response = self.query_scpi(subsystem="SENS", function="FUNC", channels=channel_list)
         function = response.strip().replace('"', '')
         return function
@@ -526,10 +502,8 @@ class Keithley24XX(SCPIInstrument):
 
 
 def main():
-    k2700 = Keithley2700()
-    k2700.clear_status_and_errors()
-    print(k2700.idn())
-    print(k2700.read_esr())
+    pass
+
 
 if __name__ == "__main__":
     main()

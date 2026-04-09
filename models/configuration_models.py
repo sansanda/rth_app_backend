@@ -10,9 +10,10 @@ class GPIBConfig(BaseModel):
     """
     GPIB communication settings for the instrument.
     """
-    gpib_card: int = Field(...,ge=0)
+    gpib_card: int = Field(..., ge=0)
     address: int = Field(..., gt=0)
     timeout_ms: int = Field(..., gt=0)
+
 
 class AveragingConfig(BaseModel):
     """
@@ -23,12 +24,14 @@ class AveragingConfig(BaseModel):
     window: float = Field(default=0.1, gt=0, le=100)
     count: int = Field(default=10, gt=0)
 
+
 class NotifyConfig(BaseModel):
     """
     Notification configuration (e.g., SMS alerts).
     """
     enabled: bool = True
     phone_number: str
+
 
 # =========================
 # MULTIMETER MODELS
@@ -50,12 +53,14 @@ class ChannelConfig(BaseModel):
     channel: int
     description: str
 
+
 class MultimeterMeasureConfig(BaseModel):
     """
     Measurement configuration for the multimeter.
     """
     nplc: float = Field(..., gt=0)
     measurement_resolution: int = Field(default=6, gt=3, lt=8)
+
 
 class TemperatureConfig(BaseModel):
     """
@@ -66,6 +71,7 @@ class TemperatureConfig(BaseModel):
     averaging: AveragingConfig
     measure: MultimeterMeasureConfig
 
+
 class MultimeterConfig(BaseModel):
     """
     Full multimeter configuration including communication and temperature setup.
@@ -73,6 +79,7 @@ class MultimeterConfig(BaseModel):
     enabled: bool = True
     gpib: GPIBConfig
     temperature: TemperatureConfig
+
 
 # =========================
 # SOURCEMETER MODELS
@@ -118,6 +125,7 @@ class SourceMeterConfig(BaseModel):
     measure: MeasureConfig
     averaging: AveragingConfig
 
+
 # =========================
 # LIMITS MODELS
 # =========================
@@ -144,6 +152,7 @@ class LimitsConfig(BaseModel):
     enabled: bool = True
     current: CurrentLimitConfig
     temperature: TemperatureLimitConfig
+
 
 # =========================
 # PROCESS MODELS
@@ -181,7 +190,6 @@ class TemperatureRampDownConfig(BaseModel):
     duration_min: float = Field(..., gt=0)
 
 
-
 class MeasurementConfig(BaseModel):
     """
     Measurement stage configuration.
@@ -192,13 +200,11 @@ class MeasurementConfig(BaseModel):
     channels: List[str]  # ["top", "bottom"]
 
 
-
 class EndConfig(BaseModel):
     """
     End-of-process actions.
     """
     notify: NotifyConfig
-
 
 
 class SafetyConfig(BaseModel):
@@ -207,7 +213,6 @@ class SafetyConfig(BaseModel):
     """
     stop_on_limit: bool = True
     cooldown_on_overtemp: bool = True
-
 
 
 class ProcessConfig(BaseModel):
@@ -223,6 +228,7 @@ class ProcessConfig(BaseModel):
     end: EndConfig
     safety: SafetyConfig
 
+
 # =========================
 # MEASURE RESULTS
 # =========================
@@ -236,6 +242,7 @@ class FileConfig(BaseModel):
     path: str = "."
     include_timestamp: bool = True
 
+
 class AutoSaveConfig(BaseModel):
     """
     Autosave configuration for periodic data persistence.
@@ -244,6 +251,7 @@ class AutoSaveConfig(BaseModel):
     period_min: int = Field(..., gt=0)
     mode: Literal["append", "overwrite"] = "append"
 
+
 class MeasureResultsConfig(BaseModel):
     """
     Configuration for storing measurement results.
@@ -251,6 +259,7 @@ class MeasureResultsConfig(BaseModel):
     enabled: bool = True
     file: FileConfig
     autosave: AutoSaveConfig
+
 
 # =========================
 # COMPLETE APP CONFIG

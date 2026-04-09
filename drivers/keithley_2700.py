@@ -1,9 +1,9 @@
 import re
 import time
 
-from drivers.SCPIInstrument import SCPIInstrument, SUPPORTED_FUNCTIONS, SUPPORTED_TCON, SUPPORTED_AVG, \
+from drivers.SCPIInstrument import SCPIInstrument, SUPPORTED_FUNCTIONS, SUPPORTED_TCON, \
     SUPPORTED_TEMPERATURE_TRANSDUCERS, SUPPORTED_TCOUPLES, SUPPORTED_FRTDS
-from models.configuration_models import MultimeterConfig, GPIBConfig
+from models.configuration_models import MultimeterConfig
 
 
 # =========================
@@ -14,7 +14,7 @@ from models.configuration_models import MultimeterConfig, GPIBConfig
 # STATIC FUNCTIONS
 # =========================
 
-def _parse_reading(raw):
+def parse_reading(raw):
     """
     Parse a raw measurement string returned by the Keithley 2700 into a structured dictionary.
 
@@ -84,7 +84,95 @@ def _parse_reading(raw):
     return parsed
 
 
+def parse_channel_list(value):
+    """
+    Parse a SCPI-style channel list string into a list of integers.
+
+    This function converts strings such as:
+        "1,2,3"
+        "1, 2, 3"
+        "(@101,102,103)"
+        "@101,102"
+    into a Python list of integers:
+        [1, 2, 3]
+        [101, 102, 103]
+
+    Args:
+        value (str | list[int] | None):
+            Input value to parse. Can be:
+                - A SCPI string with channels
+                - A list of integers (returned as-is)
+                - None (returns empty list)
+
+    Returns:
+        list[int]:
+            List of parsed channel numbers.
+
+    Raises:
+        ValueError:
+            If the string contains non-numeric values that cannot be converted.
+
+    Notes:
+        - Removes SCPI decorations like '@', '(', ')'.
+        - Ignores extra spaces and empty elements.
+        - Safe to use with instrument responses like "(@101,102,103)".
+    """
+    if value is None:
+        return []
+
+    if isinstance(value, list):
+        return value
+
+    if not isinstance(value, str):
+        raise ValueError(f"Unsupported type for channel parsing: {type(value)}")
+
+    # Clean SCPI formatting
+    cleaned = value.strip().replace("@", "").replace("(", "").replace(")", "")
+
+    # Split and convert
+    result = []
+    for item in cleaned.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        try:
+            result.append(int(item))
+        except ValueError:
+            raise ValueError(f"Invalid channel value: '{item}'")
+
+    return result
+
+
 class Keithley2700(SCPIInstrument):
+    """
+    Keithley 2700 instrument driver (version 1.0).
+
+    This class provides a high-level interface to control and interact with
+    a Keithley 2700 multimeter/switch system using SCPI commands.
+
+    It extends the `SCPIInstrument` base class, inheriting generic SCPI
+    communication capabilities and adding instrument-specific functionality
+    such as channel routing, temperature measurements, averaging, and
+    configuration of measurement parameters.
+
+    Features:
+        - Channel control (open/close, monitor, scan)
+        - Temperature measurements (FRTD, thermocouples)
+        - Measurement configuration (NPLC, resolution, units)
+        - Averaging configuration
+        - SCPI command abstraction
+
+    Notes:
+        - Designed for use with switching modules (e.g., 7700 series).
+        - Some SCPI queries (e.g., backplane relays x24/x25) may not behave
+          reliably and should be handled with care.
+        - Relies on the underlying communication implementation provided by
+          `SCPIInstrument` (e.g., GPIB, RS232, USB).
+
+    Version:
+        1.0
+    """
+
     def __init__(self, gpib_card=0, gpib_address=16, timeout=10000):
         resource_name = "GPIB" + str(gpib_card) + "::" + str(gpib_address) + "::INSTR"
         super().__init__(resource_name, timeout)
@@ -92,15 +180,6 @@ class Keithley2700(SCPIInstrument):
     # =========================
     # CONFIG
     # =========================
-    def read_on_channels(self, channels=None, open_all_channels_after=True):
-        channels_to_close = list(channels or [])
-        channels_to_close += [124, 125]
-        self.close_channels(channels_to_close)
-        result = self.read()
-        self.wait_opc()
-        if open_all_channels_after:
-            self.open_all_channels()
-        return result
 
     def enable_scan(self, enable=False):
         """
@@ -113,7 +192,7 @@ class Keithley2700(SCPIInstrument):
         self.enable_display(enable=enable_display)
 
     # TODO: modificar esto, de momento no trabajaremos en modo scan
-    def init_config(self, function="TEMP", frtd_type="PT100", nplc=1):
+    def init_config(self):
         self.reset()
         self.wait_opc()
         self.clear()
@@ -122,10 +201,6 @@ class Keithley2700(SCPIInstrument):
         self.enable_scan(enable=False)
         self.configure_output_format()
         self.enable_auto_zero()
-        self.set_function(function=function)
-        self.set_unit(unit="C")
-        self.write_scpi(subsystem='SENS', function='TEMP:FRTD:TYPE', value=frtd_type)
-        self.write_scpi(subsystem='SENS', function='TEMP:NPLC', value=nplc)
 
     def configure(self, cfg: MultimeterConfig):
         """
@@ -155,38 +230,36 @@ class Keithley2700(SCPIInstrument):
         # -------------------------
         temp_cfg = cfg.temperature
 
-        function = "TEMP"
-        self.set_function(function)
+        self.set_function("TEMP")
 
         if temp_cfg.sensor:
             self.configure_temperature_transducer(
-                transducer_type=temp_cfg.sensor.type,
-                transducer_subtype=temp_cfg.sensor.subtype
+                transducer=temp_cfg.sensor.type,
+                transducer_type=temp_cfg.sensor.subtype
             )
 
         if temp_cfg.measure.nplc:
-            self.set_nplc(function=function, nplc=temp_cfg.measure.nplc)
+            self.set_nplc(nplc=temp_cfg.measure.nplc)
 
         if temp_cfg.measure.measurement_resolution:
-            self.set_measurement_resolution(function=function, n_digits=temp_cfg.measure.measurement_resolution)
+            self.set_measurement_resolution(n_digits=temp_cfg.measure.measurement_resolution)
 
         if temp_cfg.averaging:
             avg = temp_cfg.averaging
 
             if avg.enabled:
                 self.enable_averaging(
-                    function=function,
                     count=avg.count,
                     tcontrol=avg.type,
                     window=avg.window
                 )
             else:
-                self.disable_averaging(function)
+                self.disable_averaging()
 
         # -------------------------
         # 3. CHANNELS
         # -------------------------
-        #TODO: scan por implmentar
+        # TODO: scan por implmentar
         enabled_channels = [
             ch.channel for ch in temp_cfg.channels.values() if ch.enabled
         ]
@@ -328,29 +401,194 @@ class Keithley2700(SCPIInstrument):
         return self.write_scpi(subsystem="ROUT", function="OPEN:ALL")
 
     def are_channels_closed(self, channels=None):
-        #TODO: No funciona
-        return self.query_scpi(subsystem="ROUTE", function="MULT:CLOS:STAT", channels=channels, debug=True)
+        """
+        Query the closed/open status of the specified channels.
+
+        This method sends a SCPI query to retrieve the state of the given channels
+        using `ROUTE:CLOS:STAT?`. It returns whether each channel is currently
+        closed (connected) or open.
+
+        Args:
+            channels (list[int] | None):
+                List of channel numbers to query. If None, the instrument behavior
+                depends on its default configuration.
+
+        Returns:
+            Any:
+                Response returned by the instrument. Typically indicates the open/closed
+                state of the queried channels, but the exact format depends on the
+                instrument configuration and SCPI response parsing.
+
+        Limitations:
+            - This query does NOT work reliably for backplane relays (channels x24 and x25).
+            - When querying channels such as 124, 125, 224, 225, etc., the instrument
+              may return incorrect values or not reflect the real relay state.
+
+        Side Effects:
+            - Executes a SCPI query with debug enabled.
+
+        Notes:
+            - Uses `query_scpi` with subsystem "ROUTE" and function "CLOS:STAT".
+            - Be cautious when relying on this method for validation of relay states
+              involving backplane connections.
+
+        Example:
+            inst.are_channels_closed([101, 102])
+        """
+        response = self.query_scpi(subsystem="ROUTE", function="CLOS:STAT", channels=channels, debug=True)
+        return [int(x.strip()) for x in response.split(",") if x.strip()]
 
     def get_closed_channels(self):
+        """
+        Retrieve the list of currently closed channels.
+
+        This method sends a SCPI query (`ROUTE:CLOS?`) to obtain the channels
+        that are currently closed (i.e., relays in the connected state).
+
+        Returns:
+            Any:
+                Response returned by the instrument, typically a list or string
+                representing the closed channels (e.g., "(@101,102)"), depending
+                on the instrument configuration and parsing logic.
+
+        Limitations:
+            - Backplane relays (channels x24 and x25) may not be correctly reported.
+            - Channels such as 124, 125, 224, 225, etc., might be missing or
+              inaccurately reflected in the response.
+
+        Side Effects:
+            - Executes a SCPI query with debug enabled.
+
+        Notes:
+            - Uses `query_scpi` with subsystem "ROUTE" and function "CLOS".
+            - This method is useful for general relay state inspection, but should
+              not be fully trusted when backplane relays are involved.
+
+        Example:
+            inst.get_closed_channels()
+        """
         return self.query_scpi(subsystem="ROUTE", function="CLOS", debug=True)
 
     # ========================= =========================
     # SENSe commands
     # ========================= =========================
 
-    def set_nplc(self, function='TEMP:NPLC', nplc=1.0, channel_list=None):
-        return self.write_scpi(subsystem="SENS", function=function, value=nplc, channels=channel_list)
+    def set_nplc(self, nplc=1.0, channel_list=None):
+        """
+        Set the integration time in Number of Power Line Cycles (NPLC).
+
+        This method configures the measurement integration time for the active
+        function. NPLC controls the trade-off between measurement speed and noise
+        rejection: higher values improve accuracy but increase measurement time.
+
+        Args:
+            nplc (float):
+                Integration time expressed in power line cycles (e.g., 0.1, 1, 10).
+                Typical values depend on the instrument and measurement function.
+
+            channel_list (list[int] | None):
+                Optional list of channels to apply the setting to. If None, applies
+                to the active channel or global configuration depending on the instrument.
+
+        Returns:
+            Any:
+                Result returned by `write_scpi`.
+
+        Side Effects:
+            - Updates the NPLC setting for the active measurement function.
+
+        Notes:
+            - The active function is obtained via `get_function()`.
+            - Higher NPLC values improve noise rejection (especially 50/60 Hz),
+              but slow down measurements.
+        """
+        return self.write_scpi(subsystem="SENS",
+                               function=f"{self.get_function()}:NPLC",
+                               value=nplc,
+                               channels=channel_list)
 
     def get_nplc(self, channel_list=None):
-        function = self.get_function()
-        return self.query_scpi(subsystem="SENS", function=f"{function}:NPLC", channels=channel_list)
+        """
+        Get the integration time (NPLC) for the active measurement function.
 
-    def set_measurement_resolution(self, function='TEMP:DIG', n_digits=6, channel_list=None):
-        return self.write_scpi(subsystem="SENS", function=function, value=n_digits, channels=channel_list)
+        This method queries the instrument for the current NPLC setting, which
+        defines the measurement integration time in power line cycles.
+
+        Args:
+            channel_list (list[int] | None):
+                Optional list of channels to query. If None, queries the active
+                channel or global configuration.
+
+        Returns:
+            Any:
+                Current NPLC value as returned by the instrument.
+
+        Notes:
+            - Uses the active function from `get_function()`.
+            - Useful for verifying measurement speed vs. accuracy configuration.
+        """
+        return self.query_scpi(subsystem="SENS",
+                               function=f"{self.get_function()}:NPLC",
+                               channels=channel_list)
+
+    def set_measurement_resolution(self, n_digits=6, channel_list=None):
+        """
+        Set the measurement resolution (number of digits) for the active function.
+
+        This method configures the number of digits used by the instrument for
+        measurements, affecting resolution and indirectly measurement speed.
+
+        Args:
+            n_digits (int):
+                Number of digits for measurement resolution (e.g., typically 4–7
+                depending on instrument capabilities). Higher values increase
+                resolution but may slow down measurements.
+
+            channel_list (list[int] | None):
+                Optional list of channels to apply the setting to. If None, applies
+                to the active channel or global configuration depending on the instrument.
+
+        Returns:
+            Any:
+                Result returned by `write_scpi`.
+
+        Side Effects:
+            - Updates the resolution setting (`DIG`) for the active measurement function.
+
+        Notes:
+            - The active function is obtained via `get_function()`.
+            - The valid range of `n_digits` depends on the instrument model.
+            - Increasing resolution does not necessarily improve accuracy if NPLC
+              is low; integration time typically has a greater impact on noise reduction.
+        """
+        return self.write_scpi(subsystem="SENS",
+                               function=f"{self.get_function()}:DIG",
+                               value=n_digits,
+                               channels=channel_list)
 
     def get_measurement_resolution(self, channel_list=None):
-        function = self.get_function()
-        return self.query_scpi(subsystem="SENS", function=f"{function}:DIG", channels=channel_list)
+        """
+        Get the measurement resolution (number of digits) for the active function.
+
+        This method queries the instrument for the current resolution setting,
+        expressed as the number of digits used in the measurement.
+
+        Args:
+            channel_list (list[int] | None):
+                Optional list of channels to query. If None, queries the active
+                channel or global configuration.
+
+        Returns:
+            Any:
+                Current resolution (number of digits) as returned by the instrument.
+
+        Notes:
+            - Uses the active function from `get_function()`.
+            - Useful for verifying precision and speed trade-offs in measurements.
+        """
+        return self.query_scpi(subsystem="SENS",
+                               function=f"{self.get_function()}:DIG",
+                               channels=channel_list)
 
     def set_function(self, function: str):
         """
@@ -373,50 +611,102 @@ class Keithley2700(SCPIInstrument):
 
         return self.write_scpi(subsystem="SENS", function="FUNC", value=function, quoted=True)
 
-    def get_function(self, clear_buffer=True, channel_list=None):
+    def get_function(self, channel_list=None):
         """
-        Retrieve the currently selected measurement function from the Keithley 2700.
+        Get the active measurement function.
 
-        Optionally clears the instrument status and error queue before querying,
-        ensuring a clean state.
+        This method queries the instrument to retrieve the currently configured
+        measurement function (e.g., "VOLT:DC", "CURR:DC", "RES", "TEMP") and
+        returns it as a clean string without SCPI formatting.
 
-        Parameters:
-            clear_buffer (bool, optional):
-                If True, execute clear_status_and_errors() before querying the function.
-                This clears the status registers and error queue.
-                Default is True.
+        Args:
+            channel_list (list[int] | None):
+                Optional list of channels to query. If None, queries the active
+                channel or global configuration depending on the instrument.
 
         Returns:
             str:
-                Active measurement function (e.g., "TEMP", "VOLT:DC", "RES", etc.).
+                Active measurement function as a string, without quotes.
+
+        Side Effects:
+            - Executes a SCPI query (`SENS:FUNC?`).
 
         Notes:
-            - The function is returned without quotes.
-            - The query used is ":SENS:FUNC?".
-            - Clearing the buffer is recommended when you want to avoid
-              residual errors affecting subsequent operations.
+            - The raw SCPI response typically includes quotes (e.g., '"VOLT:DC"'),
+              which are stripped before returning.
+            - This value is widely used internally to build other SCPI commands
+              dynamically.
         """
-        if clear_buffer: self.clear_status_and_errors()
         response = self.query_scpi(subsystem="SENS", function="FUNC", channels=channel_list)
         function = response.strip().replace('"', '')
         return function
 
-    def configure_temperature_transducer(self, transducer_type='FRTD', transducer_subtype='PT100', channels=None):
-        if transducer_subtype is None or transducer_subtype is None:
+    def configure_temperature_transducer(self, transducer='FRTD', transducer_type='PT100', channels=None):
+        """
+        Configure the temperature transducer type and subtype for measurement.
+
+        This method sets the temperature transducer used by the instrument
+        (e.g., thermocouple or RTD) and configures its specific subtype
+        (e.g., PT100, type K, etc.) for the selected channels.
+
+        Args:
+            transducer (str):
+                Type of temperature transducer. Supported values include:
+                    - 'TC'   : Thermocouple
+                    - 'FRTD' : 4-wire RTD
+                Case-insensitive.
+
+            transducer_type (str):
+                Specific subtype of the transducer:
+                    - For 'TC': thermocouple type (e.g., 'K', 'J', 'T', etc.)
+                    - For 'FRTD': RTD type (e.g., 'PT100', 'PT1000', etc.)
+                Case-insensitive.
+
+            channels (list[int] | None):
+                Optional list of channels to apply the configuration to. If None,
+                applies to the active channel or global configuration depending
+                on the instrument.
+
+        Raises:
+            ValueError:
+                - If `transducer_type` or `transducer_subtype` is not a valid string.
+                - If `transducer_type` is not supported.
+                - If `transducer_subtype` is not valid for the selected type.
+
+        Side Effects:
+            - Configures the temperature transducer type (`TEMP:TRAN`).
+            - Sets the corresponding subtype:
+                - `TEMP:TC:TYPE` for thermocouples
+                - `TEMP:FRTD:TYPE` for RTDs
+
+        Notes:
+            - Supported values are validated against:
+                `SUPPORTED_TEMPERATURE_TRANSDUCERS`,
+                `SUPPORTED_TCOUPLES`,
+                and `SUPPORTED_FRTDS`.
+            - The active measurement function must be set to temperature (`TEMP`)
+              for this configuration to be effective.
+            - Configuration persists until changed.
+
+        Example:
+            inst.configure_temperature_transducer('FRTD', 'PT100', channels=[104,114])
+            inst.configure_temperature_transducer('TC', 'K', channels=[101])
+        """
+        if transducer is None or transducer_type is None:
             raise ValueError(f"Transducer type y transducer subtype deben ser valores str")
+        transducer = transducer.upper()
         transducer_type = transducer_type.upper()
-        transducer_subtype = transducer_subtype.upper()
-        if transducer_type not in SUPPORTED_TEMPERATURE_TRANSDUCERS:
-            raise ValueError(f"Transducer no válido: {transducer_type}")
-        if transducer_type == "TC" and transducer_subtype not in SUPPORTED_TCOUPLES:
-            raise ValueError(f"Thermocouple no válida: {transducer_subtype}")
-        if transducer_type == "FRTD" and transducer_subtype not in SUPPORTED_FRTDS:
-            raise ValueError(f"FRTD no válida: {transducer_subtype}")
-        self.write_scpi(subsystem="SENS", function="TEMP:TRAN", value=transducer_type, channels=channels)
-        if transducer_type == "TC":
-            self.write_scpi(subsystem="SENS", function="TEMP:TC:TYPE", value=transducer_subtype, channels=channels)
-        if transducer_type == "FRTD":
-            self.write_scpi(subsystem="SENS", function="TEMP:FRTD:TYPE", value=transducer_subtype, channels=channels)
+        if transducer not in SUPPORTED_TEMPERATURE_TRANSDUCERS:
+            raise ValueError(f"Transducer no válido: {transducer}")
+        if transducer == "TC" and transducer_type not in SUPPORTED_TCOUPLES:
+            raise ValueError(f"Thermocouple no válida: {transducer_type}")
+        if transducer == "FRTD" and transducer_type not in SUPPORTED_FRTDS:
+            raise ValueError(f"FRTD no válida: {transducer_type}")
+        self.write_scpi(subsystem="SENS", function="TEMP:TRAN", value=transducer, channels=channels)
+        if transducer == "TC":
+            self.write_scpi(subsystem="SENS", function="TEMP:TC:TYPE", value=transducer_type, channels=channels)
+        if transducer == "FRTD":
+            self.write_scpi(subsystem="SENS", function="TEMP:FRTD:TYPE", value=transducer_type, channels=channels)
 
     # ========================= =========================
     # STATus commands
@@ -443,20 +733,66 @@ class Keithley2700(SCPIInstrument):
     # UNIT commads
     # ========================= =========================
     def set_unit(self, unit=None):
+        """
+        Set the measurement unit for the active function.
+
+        This method configures the unit used by the instrument for the current
+        measurement function (e.g., Celsius, Fahrenheit, Ohms, Volts, etc.).
+
+        Args:
+            unit (str | None):
+                Unit to set for the active function. The valid values depend on
+                the measurement function (e.g., "C" or "F" for temperature).
+                If None, instrument behavior depends on its defaults.
+
+        Returns:
+            Any:
+                Result returned by `write_scpi`.
+
+        Side Effects:
+            - Updates the unit configuration (`UNIT:<function>`) for the active function.
+
+        Notes:
+            - The active function is obtained via `get_function()`.
+            - Supported units depend on the instrument and selected function.
+            - This setting persists until changed.
+        """
         return self.write_scpi(subsystem="UNIT", function=self.get_function(), value=unit)
+
+    def get_unit(self, channel_list=None):
+        """
+        Get the measurement unit for the active function.
+
+        This method queries the instrument for the currently configured unit
+        associated with the active measurement function.
+
+        Args:
+            channel_list (list[int] | None):
+                Optional list of channels to query. If None, queries the active
+                channel or global configuration depending on the instrument.
+
+        Returns:
+            Any:
+                Current unit as returned by the instrument (e.g., "C", "F", "OHM", "V").
+
+        Notes:
+            - Uses the active function from `get_function()`.
+            - Useful for verifying configuration consistency across channels.
+        """
+        return self.query_scpi(subsystem="UNIT", function=self.get_function(), channels=channel_list)
 
     # =========================
     # MEASURE
     # =========================
     def read(self):
-        reading = _parse_reading(self.query("READ?"))
+        reading = parse_reading(self.query("READ?"))
         self.wait_opc()
         return reading
 
     # =========================
     # FILTER (simple)
     # =========================
-    def enable_averaging(self, count=5, tcontrol='REP', window=None):
+    def enable_averaging(self, count=5, tcontrol='REP', window=None | float):
         """
         Enable and configure measurement averaging for the active function.
 
@@ -478,7 +814,7 @@ class Keithley2700(SCPIInstrument):
                     - 'MOV' (Moving): Applies a moving average over a sliding window.
                 Case-insensitive.
 
-            window (int | None):
+            window (float | None):
                 Size of the moving average window. Only valid when `tcontrol='MOV'`.
                 If provided with 'REP', a ValueError is raised.
 
@@ -501,7 +837,7 @@ class Keithley2700(SCPIInstrument):
               for discrete measurements.
 
         Example:
-            >>> inst.enable_averaging(count=10, tcontrol='MOV', window=5)
+            inst.enable_averaging(count=10, tcontrol='MOV', window=5)
         """
         actual_function = self.get_function()
 
@@ -546,15 +882,25 @@ class Keithley2700(SCPIInstrument):
 def main():
     k2700 = Keithley2700(gpib_address=14)
     k2700.init_config()
-    k2700.enable_averaging(count=10,
+
+    k2700.set_function(function="TEMP")
+    k2700.set_unit(unit="C")
+    k2700.set_measurement_resolution(n_digits=5)
+
+    k2700.configure_temperature_transducer(transducer='FRTD', transducer_type='PT100')
+    k2700.set_nplc(1)
+
+    k2700.enable_averaging(count=2,
                            tcontrol="REP",
                            window=None)
+
     k2700.enable_scan(enable=False)
     k2700.open_all_channels()
     k2700.close_channels(channels=[104, 114, 124, 125])
-    k2700.wait_opc()
-    # print(k2700.are_channels_closed(channels=[104, 114, 124, 125]))
 
+    k2700.wait_opc()
+    print(k2700.are_channels_closed(channels=[104, 114, 105, 115]))
+    print(k2700.get_closed_channels())
 
     while True:
         result = k2700.read()
