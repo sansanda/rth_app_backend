@@ -1,5 +1,4 @@
 import re
-import time
 
 from drivers.SCPIInstrument import SCPIInstrument, SUPPORTED_FUNCTIONS, SUPPORTED_TCON, \
     SUPPORTED_TEMPERATURE_TRANSDUCERS, SUPPORTED_TCOUPLES, SUPPORTED_FRTDS
@@ -17,9 +16,9 @@ from models.configuration_models import SourceMeterConfig
 def parse_reading(raw):
     # TODO: Adaptar al 24xx o usar el del 2700 si se puede
     """
-    Parse a raw measurement string returned by the Keithley 2700 into a structured dictionary.
+    Parse a raw measurement string returned by the Keithley 2400 into a structured dictionary.
 
-    The Keithley 2700 can return measurement data in different formats depending on the
+    The Keithley 2400 can return measurement data in different formats depending on the
     configured output elements (FORM:ELEM). The response may include the measured value,
     timestamp, unit, reading number, and other metadata, typically separated by commas.
 
@@ -42,7 +41,7 @@ def parse_reading(raw):
 
     Returns:
         dict: Parsed measurement data. Possible keys include:
-            - "value" (float): Measured value (e.g., temperature in °C)
+            - "value" (float): Measured value (e.g., voltage in Volts)
             - "time" (float): Timestamp in seconds (if present)
             - "reading_number" (int): Sequential reading index (if present)
 
@@ -88,10 +87,10 @@ def parse_reading(raw):
 class Keithley24xx(SCPIInstrument):
     # TODO: Adaptar lo necesario y eliminar lo innecesario
 
-    def __init__(self, gpib_card=0, gpib_address=14, timeout=10000):
+    def __init__(self, gpib_card=0, gpib_address=16, timeout=10000):
         resource_name = "GPIB" + str(gpib_card) + "::" + str(gpib_address) + "::INSTR"
         super().__init__(resource_name, timeout)
-
+        self._source_mode = None  # cache interna
     # =========================
     # CONFIG
     # =========================
@@ -132,49 +131,6 @@ class Keithley24xx(SCPIInstrument):
             # solo actualizar timeout
             self.inst.timeout = gpib_cfg.timeout_ms
 
-        # -------------------------
-        # 2. TEMPERATURE
-        # -------------------------
-        temp_cfg = cfg.temperature
-
-        self.set_function("TEMP")
-
-        if temp_cfg.sensor:
-            self.configure_temperature_transducer(
-                transducer=temp_cfg.sensor.type,
-                transducer_type=temp_cfg.sensor.subtype
-            )
-
-        if temp_cfg.measure.nplc:
-            self.set_nplc(nplc=temp_cfg.measure.nplc)
-
-        if temp_cfg.measure.measurement_resolution:
-            self.set_measurement_resolution(n_digits=temp_cfg.measure.measurement_resolution)
-
-        if temp_cfg.averaging:
-            avg = temp_cfg.averaging
-
-            if avg.enabled:
-                self.enable_averaging(
-                    count=avg.count,
-                    tcontrol=avg.type,
-                    window=avg.window
-                )
-            else:
-                self.disable_averaging()
-
-        # -------------------------
-        # 3. CHANNELS
-        # -------------------------
-        # TODO: scan por implmentar
-        enabled_channels = [
-            ch.channel for ch in temp_cfg.channels.values() if ch.enabled
-        ]
-
-        if enabled_channels:
-            # self.set_scan_channels(enabled_channels)
-            pass
-
     # ========================= =========================
     # CALCulate commands
     # ========================= =========================
@@ -186,73 +142,127 @@ class Keithley24xx(SCPIInstrument):
     def enable_display(self, enable=True):
         return self.write_scpi(subsystem="DISP", function="ENAB", value=enable)
 
+    def set_display_resolution(self, n_digits=6):
+        """
+        Set the measurement resolution (number of digits) for the active function.
+
+        This method configures the number of digits used by the instrument for
+        measurements, affecting resolution and indirectly measurement speed.
+
+        Args:
+            n_digits (int):
+                Number of digits for measurement resolution (e.g., typically 4–7
+                depending on instrument capabilities). Higher values increase
+                resolution but may slow down measurements.
+
+        Returns:
+            Any:
+                Result returned by `write_scpi`.
+
+        Side Effects:
+            - Updates the resolution setting (`DIG`) for the active measurement function.
+
+        Notes:
+            - The valid range of `n_digits` depends on the instrument model.
+            - Increasing resolution does not necessarily improve accuracy if NPLC
+              is low; integration time typically has a greater impact on noise reduction.
+        """
+        return self.write_scpi(subsystem="DISP",
+                               function="DIG",
+                               value=n_digits)
+
+    def get_display_resolution(self):
+        """
+        Get the measurement resolution (number of digits) for the active function.
+
+        This method queries the instrument for the current resolution setting,
+        expressed as the number of digits used in the measurement.
+
+        Returns:
+            Any:
+                Current resolution (number of digits) as returned by the instrument.
+
+        Notes:
+            - Useful for verifying precision and speed trade-offs in measurements.
+        """
+        return self.query_scpi(subsystem="SENS",
+                               function="DIG")
+
     # ========================= =========================
     # FORMat commands
     # ========================= =========================
 
     def configure_output_format(
             self,
-            read=True,
+            voltage=True,
+            current=False,
+            resistance=False,
             time=False,
-            unit=False,
-            status=False,
-            channel=False,
-            reading_number=False
+            status=False
     ):
         """
-        Configura el formato de salida de las lecturas del instrumento mediante
-        el comando SCPI `FORM:ELEM`.
+        Configure the output data format of the instrument.
 
-        Permite seleccionar qué elementos se incluirán en cada lectura devuelta
-        por el equipo (por ejemplo, valor medido, tiempo, unidad, etc.).
+        This method defines which measurement elements are included in the data
+        returned by the instrument using the SCPI `FORM:ELEM` command.
 
-        Parámetros
+        Parameters
         ----------
-        read : bool, opcional
-            Incluye el valor de la medida (READ). Por defecto True.
-        time : bool, opcional
-            Incluye la marca de tiempo de la lectura (TIME). Por defecto False.
-        unit : bool, opcional
-            Incluye la unidad de la medida (UNIT). Por defecto False.
-        status : bool, opcional
-            Incluye el estado de la medida (STAT). Por defecto False.
-        channel : bool, opcional
-            Incluye el canal de adquisición (CHAN). Por defecto False.
-        reading_number : bool, opcional
-            Incluye el número de lectura (NUM). Por defecto False.
+        voltage : bool, optional
+            Include measured voltage ("VOLT") in the output data. Default is True.
+        current : bool, optional
+            Include measured current ("CURR") in the output data. Default is False.
+        resistance : bool, optional
+            Include calculated resistance ("RES") in the output data. Default is False.
+        time : bool, optional
+            Include timestamp ("TIME") in the output data. Default is False.
+        status : bool, optional
+            Include measurement status ("STAT") in the output data. Default is False.
 
-        Excepciones
-        -----------
-        ValueError
-            Se lanza si no se selecciona ningún elemento de salida.
-
-        Notas
-        -----
-        - El comando generado sigue el formato: `FORM:ELEM <element1>,<element2>,...`
-        - El orden de los elementos es el mismo en que se añaden internamente.
-        - Esta configuración afecta a cómo se devuelven los datos en lecturas
-          posteriores del instrumento.
-
-        Ejemplo
+        Returns
         -------
-        configure_output_format(read=True, time=True, unit=True)
-        # Envía: FORM:ELEM READ,TIME,UNIT
-        """
+        Any
+            The response returned by the underlying SCPI write operation.
 
+        Raises
+        ------
+        ValueError
+            If no output elements are selected.
+
+        Notes
+        -----
+        The selected elements determine the structure and order of the data returned
+        by the instrument during measurement queries (e.g., `READ?` or `FETCH?`).
+        Ensure that the parsing logic matches the configured output format.
+
+        Examples
+        --------
+        Configure voltage and current output:
+
+        instrument.configure_output_format(voltage=True, current=True)
+
+        Configure full output including time and status:
+
+        instrument.configure_output_format(
+        ...     voltage=True,
+        ...     current=True,
+        ...     resistance=True,
+        ...     time=True,
+        ...     status=True
+        ... )
+        """
         elements = []
 
-        if read:
-            elements.append("READ")
+        if voltage:
+            elements.append("VOLT")
+        if current:
+            elements.append("CURR")
+        if resistance:
+            elements.append("RES")
         if time:
             elements.append("TIME")
-        if unit:
-            elements.append("UNIT")
         if status:
             elements.append("STAT")
-        if channel:
-            elements.append("CHAN")
-        if reading_number:
-            elements.append("NUM")
 
         if not elements:
             raise ValueError("At least one output element must be selected")
@@ -261,126 +271,55 @@ class Keithley24xx(SCPIInstrument):
         return self.write_scpi(subsystem="FORM", function="ELEM", value=value)
 
     # ========================= =========================
+    # OUTPut commands
+    # ========================= =========================
+    def set_output(self, on=True):
+        return self.write_scpi(subsystem="OUTP",
+                               function="STAT",
+                               value=on)
+
+    def get_output_status(self):
+        return self.query_scpi(subsystem="OUTP",
+                               function="STAT")
+
+    # ========================= =========================
     # ROUTe commands
     # ========================= =========================
-    def close_channels(self, channels=None, delay=0.1):
+    def set_output_route(self, route="FRONT"):
         """
-        Close (connect) one or more channels on the Keithley 2700 expasion slot determined by the channel number itself.
+        Set the output terminal routing of the instrument.
 
-        This command closes the specified channel(s), allowing the signal
-        to pass through the internal multiplexer.
+        This method configures which output terminals are used for signal routing
+        (e.g., front or rear terminals) by sending the appropriate SCPI command.
 
-        Parameters:
-            channel (int | list[int]):
-                Channel number or list of channel numbers to close.
-                Example: 101 or [101, 102]
+        Parameters
+        ----------
+        route : str, optional
+            Output route selection. Common values are:
+            - "FRONT": Use the front panel terminals
+            - "REAR": Use the rear panel terminals
+            Default is "FRONT".
 
-        Notes:
-            - SCPI command used: "ROUT:CLOS (@<channel_list>)"
-            - Closing a channel connects it to the measurement path.
-            - Multiple channels can be closed simultaneously.
-            - Ensure channels belong to a valid installed multiplexer card (e.g., 7700).
-            :param delay: Wait after close channels
-            :param channels: Channel or Channels to close
+        Returns
+        -------
+        Any
+            The response returned by the underlying SCPI write operation.
+
+        Notes
+        -----
+        Ensure that the selected route matches the physical connections on the instrument
+        to avoid measurement errors or incorrect signal routing.
         """
-
-        if isinstance(channels, list):
-            cmd = self.write_scpi(subsystem="ROUT", function="MULT:CLOS", channels=channels)
-        else:
-            cmd = self.write_scpi(subsystem="ROUT", function="CLOS", channels=channels)
-        # wait for relay/s setting
-        if delay:
-            time.sleep(delay)
-        return cmd
-
-    def open_all_channels(self):
-        """
-        Open (disconnect) all channels on the Keithley 2700 scanner.
-
-        This command opens every channel in the internal multiplexer,
-        ensuring no connections remain active.
-
-        Notes:
-            - SCPI command used: "ROUT:OPEN:ALL"
-            - Typically used to reset the switching state before a new measurement.
-            - Recommended before configuring or starting a scan sequence.
-        """
-        return self.write_scpi(subsystem="ROUT", function="OPEN:ALL")
-
-    def are_channels_closed(self, channels=None):
-        """
-        Query the closed/open status of the specified channels.
-
-        This method sends a SCPI query to retrieve the state of the given channels
-        using `ROUTE:CLOS:STAT?`. It returns whether each channel is currently
-        closed (connected) or open.
-
-        Args:
-            channels (list[int] | None):
-                List of channel numbers to query. If None, the instrument behavior
-                depends on its default configuration.
-
-        Returns:
-            Any:
-                Response returned by the instrument. Typically indicates the open/closed
-                state of the queried channels, but the exact format depends on the
-                instrument configuration and SCPI response parsing.
-
-        Limitations:
-            - This query does NOT work reliably for backplane relays (channels x24 and x25).
-            - When querying channels such as 124, 125, 224, 225, etc., the instrument
-              may return incorrect values or not reflect the real relay state.
-
-        Side Effects:
-            - Executes a SCPI query with debug enabled.
-
-        Notes:
-            - Uses `query_scpi` with subsystem "ROUTE" and function "CLOS:STAT".
-            - Be cautious when relying on this method for validation of relay states
-              involving backplane connections.
-
-        Example:
-            inst.are_channels_closed([101, 102])
-        """
-        response = self.query_scpi(subsystem="ROUTE", function="CLOS:STAT", channels=channels, debug=True)
-        return [int(x.strip()) for x in response.split(",") if x.strip()]
-
-    def get_closed_channels(self):
-        """
-        Retrieve the list of currently closed channels.
-
-        This method sends a SCPI query (`ROUTE:CLOS?`) to obtain the channels
-        that are currently closed (i.e., relays in the connected state).
-
-        Returns:
-            Any:
-                Response returned by the instrument, typically a list or string
-                representing the closed channels (e.g., "(@101,102)"), depending
-                on the instrument configuration and parsing logic.
-
-        Limitations:
-            - Backplane relays (channels x24 and x25) may not be correctly reported.
-            - Channels such as 124, 125, 224, 225, etc., might be missing or
-              inaccurately reflected in the response.
-
-        Side Effects:
-            - Executes a SCPI query with debug enabled.
-
-        Notes:
-            - Uses `query_scpi` with subsystem "ROUTE" and function "CLOS".
-            - This method is useful for general relay state inspection, but should
-              not be fully trusted when backplane relays are involved.
-
-        Example:
-            inst.get_closed_channels()
-        """
-        return self.query_scpi(subsystem="ROUTE", function="CLOS", debug=True)
+        return self.write_scpi(subsystem="ROUT",
+                               function="TERM",
+                               value=route)
 
     # ========================= =========================
     # SENSe commands
     # ========================= =========================
 
-    def set_nplc(self, nplc=1.0, channel_list=None):
+    def set_nplc(self, nplc=1.0):
+        # TODO: Testear
         """
         Set the integration time in Number of Power Line Cycles (NPLC).
 
@@ -411,20 +350,15 @@ class Keithley24xx(SCPIInstrument):
         """
         return self.write_scpi(subsystem="SENS",
                                function=f"{self.get_function()}:NPLC",
-                               value=nplc,
-                               channels=channel_list)
+                               value=nplc)
 
-    def get_nplc(self, channel_list=None):
+    def get_nplc(self):
+        # TODO: Testear
         """
         Get the integration time (NPLC) for the active measurement function.
 
         This method queries the instrument for the current NPLC setting, which
         defines the measurement integration time in power line cycles.
-
-        Args:
-            channel_list (list[int] | None):
-                Optional list of channels to query. If None, queries the active
-                channel or global configuration.
 
         Returns:
             Any:
@@ -435,67 +369,7 @@ class Keithley24xx(SCPIInstrument):
             - Useful for verifying measurement speed vs. accuracy configuration.
         """
         return self.query_scpi(subsystem="SENS",
-                               function=f"{self.get_function()}:NPLC",
-                               channels=channel_list)
-
-    def set_measurement_resolution(self, n_digits=6, channel_list=None):
-        """
-        Set the measurement resolution (number of digits) for the active function.
-
-        This method configures the number of digits used by the instrument for
-        measurements, affecting resolution and indirectly measurement speed.
-
-        Args:
-            n_digits (int):
-                Number of digits for measurement resolution (e.g., typically 4–7
-                depending on instrument capabilities). Higher values increase
-                resolution but may slow down measurements.
-
-            channel_list (list[int] | None):
-                Optional list of channels to apply the setting to. If None, applies
-                to the active channel or global configuration depending on the instrument.
-
-        Returns:
-            Any:
-                Result returned by `write_scpi`.
-
-        Side Effects:
-            - Updates the resolution setting (`DIG`) for the active measurement function.
-
-        Notes:
-            - The active function is obtained via `get_function()`.
-            - The valid range of `n_digits` depends on the instrument model.
-            - Increasing resolution does not necessarily improve accuracy if NPLC
-              is low; integration time typically has a greater impact on noise reduction.
-        """
-        return self.write_scpi(subsystem="SENS",
-                               function=f"{self.get_function()}:DIG",
-                               value=n_digits,
-                               channels=channel_list)
-
-    def get_measurement_resolution(self, channel_list=None):
-        """
-        Get the measurement resolution (number of digits) for the active function.
-
-        This method queries the instrument for the current resolution setting,
-        expressed as the number of digits used in the measurement.
-
-        Args:
-            channel_list (list[int] | None):
-                Optional list of channels to query. If None, queries the active
-                channel or global configuration.
-
-        Returns:
-            Any:
-                Current resolution (number of digits) as returned by the instrument.
-
-        Notes:
-            - Uses the active function from `get_function()`.
-            - Useful for verifying precision and speed trade-offs in measurements.
-        """
-        return self.query_scpi(subsystem="SENS",
-                               function=f"{self.get_function()}:DIG",
-                               channels=channel_list)
+                               function=f"{self.get_function()}:NPLC")
 
     def set_function(self, function: str):
         """
@@ -548,73 +422,341 @@ class Keithley24xx(SCPIInstrument):
         function = response.strip().replace('"', '')
         return function
 
-    def configure_temperature_transducer(self, transducer='FRTD', transducer_type='PT100', channels=None):
+    def set_compliance_current(self, value: float):
         """
-        Configure the temperature transducer type and subtype for measurement.
+        Set the current compliance (protection limit) of the instrument.
 
-        This method sets the temperature transducer used by the instrument
-        (e.g., thermocouple or RTD) and configures its specific subtype
-        (e.g., PT100, type K, etc.) for the selected channels.
+        This method sets the maximum allowed current when the instrument is
+        sourcing voltage, using the SCPI `SENS:CURR:PROT` command.
 
-        Args:
-            transducer (str):
-                Type of temperature transducer. Supported values include:
-                    - 'TC'   : Thermocouple
-                    - 'FRTD' : 4-wire RTD
-                Case-insensitive.
+        Parameters
+        ----------
+        value : float
+            Compliance current limit (in amperes).
 
-            transducer_type (str):
-                Specific subtype of the transducer:
-                    - For 'TC': thermocouple type (e.g., 'K', 'J', 'T', etc.)
-                    - For 'FRTD': RTD type (e.g., 'PT100', 'PT1000', etc.)
-                Case-insensitive.
+        Returns
+        -------
+        Any
+            The response returned by the underlying SCPI write operation.
 
-            channels (list[int] | None):
-                Optional list of channels to apply the configuration to. If None,
-                applies to the active channel or global configuration depending
-                on the instrument.
+        Raises
+        ------
+        TypeError
+            If the provided value is not numeric.
+        ValueError
+            If the instrument is not in voltage source mode.
 
-        Raises:
-            ValueError:
-                - If `transducer_type` or `transducer_subtype` is not a valid string.
-                - If `transducer_type` is not supported.
-                - If `transducer_subtype` is not valid for the selected type.
-
-        Side Effects:
-            - Configures the temperature transducer type (`TEMP:TRAN`).
-            - Sets the corresponding subtype:
-                - `TEMP:TC:TYPE` for thermocouples
-                - `TEMP:FRTD:TYPE` for RTDs
-
-        Notes:
-            - Supported values are validated against:
-                `SUPPORTED_TEMPERATURE_TRANSDUCERS`,
-                `SUPPORTED_TCOUPLES`,
-                and `SUPPORTED_FRTDS`.
-            - The active measurement function must be set to temperature (`TEMP`)
-              for this configuration to be effective.
-            - Configuration persists until changed.
-
-        Example:
-            inst.configure_temperature_transducer('FRTD', 'PT100', channels=[104,114])
-            inst.configure_temperature_transducer('TC', 'K', channels=[101])
+        Notes
+        -----
+        This operation is only valid when the source mode is "VOLT".
+        The compliance current acts as a protection limit for the DUT.
         """
-        if transducer is None or transducer_type is None:
-            raise ValueError(f"Transducer type y transducer subtype deben ser valores str")
-        transducer = transducer.upper()
-        transducer_type = transducer_type.upper()
-        if transducer not in SUPPORTED_TEMPERATURE_TRANSDUCERS:
-            raise ValueError(f"Transducer no válido: {transducer}")
-        if transducer == "TC" and transducer_type not in SUPPORTED_TCOUPLES:
-            raise ValueError(f"Thermocouple no válida: {transducer_type}")
-        if transducer == "FRTD" and transducer_type not in SUPPORTED_FRTDS:
-            raise ValueError(f"FRTD no válida: {transducer_type}")
-        self.write_scpi(subsystem="SENS", function="TEMP:TRAN", value=transducer, channels=channels)
-        if transducer == "TC":
-            self.write_scpi(subsystem="SENS", function="TEMP:TC:TYPE", value=transducer_type, channels=channels)
-        if transducer == "FRTD":
-            self.write_scpi(subsystem="SENS", function="TEMP:FRTD:TYPE", value=transducer_type, channels=channels)
+        if not isinstance(value, (float, int)):
+            raise TypeError(f"Compliance current must be a float, got {type(value)}")
 
+        self._require_source_mode("VOLT")
+
+        return self.write_scpi(
+            subsystem="SENS",
+            function="CURR:PROT",
+            value=float(value)
+        )
+
+    def set_compliance_voltage(self, value: float):
+        """
+        Set the voltage compliance (protection limit) of the instrument.
+
+        This method sets the maximum allowed voltage when the instrument is
+        sourcing current, using the SCPI `SENS:VOLT:PROT` command.
+
+        Parameters
+        ----------
+        value : float
+            Compliance voltage limit (in volts).
+
+        Returns
+        -------
+        Any
+            The response returned by the underlying SCPI write operation.
+
+        Raises
+        ------
+        TypeError
+            If the provided value is not numeric.
+        ValueError
+            If the instrument is not in current source mode.
+
+        Notes
+        -----
+        This operation is only valid when the source mode is "CURR".
+        The compliance voltage acts as a protection limit for the DUT.
+        """
+        if not isinstance(value, (float, int)):
+            raise TypeError(f"Compliance voltage must be a float, got {type(value)}")
+
+        self._require_source_mode("CURR")
+
+        return self.write_scpi(
+            subsystem="SENS",
+            function="VOLT:PROT",
+            value=float(value)
+        )
+
+    # ========================= =========================
+    # SOURce commands
+    # ========================= =========================
+    def set_source_mode(self, mode="VOLT"):
+        """
+        Set the source function mode of the instrument.
+        """
+        mode = mode.strip().upper()
+
+        if mode not in ("VOLT", "CURR"):
+            raise ValueError(f"Invalid source mode: {mode}. Expected 'VOLT' or 'CURR'.")
+
+        result = self.write_scpi(subsystem="SOUR", function="FUNC:MODE", value=mode)
+
+        # 🔥 actualizas cache SOLO si el comando se ha enviado
+        self._source_mode = mode
+
+        return result
+
+    def get_source_mode(self, refresh=False):
+        """
+        Get the current source mode, using cache when possible.
+
+        Parameters
+        ----------
+        refresh : bool, optional
+            If True, force a query to the instrument. Default is False.
+
+        Returns
+        -------
+        str
+            Source mode ("VOLT" or "CURR").
+        """
+        if self._source_mode is None or refresh:
+            response = self.query_scpi(subsystem="SOUR", function="FUNC:MODE")
+            self._source_mode = response.strip().upper()
+
+        return self._source_mode
+
+    def set_voltage_level(self, value: float):
+        """
+        Set the source voltage level of the instrument.
+
+        This method sets the output voltage using the SCPI `SOUR:VOLT` command.
+        It verifies that the instrument is configured in voltage source mode and
+        ensures that the level does not exceed the configured range.
+
+        Parameters
+        ----------
+        value : float
+            Voltage level to be sourced (in volts).
+
+        Returns
+        -------
+        Any
+            The response returned by the underlying SCPI write operation.
+
+        Raises
+        ------
+        TypeError
+            If the provided value is not numeric.
+        ValueError
+            If the instrument is not in voltage source mode or if the level
+            exceeds the configured range.
+
+        Notes
+        -----
+        This operation is only valid when the source mode is set to "VOLT".
+        """
+        if not isinstance(value, (float, int)):
+            raise TypeError(f"Voltage level must be a float, got {type(value)}")
+
+        self._require_source_mode("VOLT")
+
+        level = float(value)
+
+        # 🔎 Validación contra rango (si no está en AUTO)
+        auto = self.query_scpi(subsystem="SOUR", function="VOLT:RANG:AUTO").strip().upper()
+        if auto == "OFF":
+            range_value = float(self.query_scpi(subsystem="SOUR", function="VOLT:RANG"))
+            if level > range_value:
+                raise ValueError(
+                    f"Voltage level ({level}) exceeds configured range ({range_value})"
+                )
+
+        return self.write_scpi(subsystem="SOUR", function="VOLT", value=level)
+
+    def set_current_level(self, value: float):
+        """
+        Set the source current level of the instrument.
+
+        This method sets the output current using the SCPI `SOUR:CURR` command.
+        It verifies that the instrument is configured in current source mode and
+        ensures that the level does not exceed the configured range.
+
+        Parameters
+        ----------
+        value : float
+            Current level to be sourced (in amperes).
+
+        Returns
+        -------
+        Any
+            The response returned by the underlying SCPI write operation.
+
+        Raises
+        ------
+        TypeError
+            If the provided value is not numeric.
+        ValueError
+            If the instrument is not in current source mode or if the level
+            exceeds the configured range.
+
+        Notes
+        -----
+        This operation is only valid when the source mode is set to "CURR".
+        """
+        if not isinstance(value, (float, int)):
+            raise TypeError(f"Current level must be a float, got {type(value)}")
+
+        self._require_source_mode("CURR")
+
+        level = float(value)
+
+        # 🔎 Validación contra rango (si no está en AUTO)
+        auto = self.query_scpi(subsystem="SOUR", function="CURR:RANG:AUTO").strip().upper()
+        if auto == "OFF":
+            range_value = float(self.query_scpi(subsystem="SOUR", function="CURR:RANG"))
+            if level > range_value:
+                raise ValueError(
+                    f"Current level ({level}) exceeds configured range ({range_value})"
+                )
+
+        return self.write_scpi(subsystem="SOUR", function="CURR", value=level)
+
+    def set_voltage_range(self, value):
+        """
+        Set the source voltage range of the instrument.
+
+        This method configures the voltage source range using the SCPI
+        `SOUR:VOLT:RANG` command or enables auto-ranging with
+        `SOUR:VOLT:RANG:AUTO ON`.
+
+        Parameters
+        ----------
+        value : float or str
+            Voltage range to be set (in volts), or "AUTO" to enable auto-ranging.
+
+        Returns
+        -------
+        Any
+            The response returned by the underlying SCPI write operation.
+
+        Raises
+        ------
+        TypeError
+            If the provided value is neither numeric nor "AUTO".
+        ValueError
+            If the instrument is not in voltage source mode.
+
+        Notes
+        -----
+        This operation is only valid when the source mode is set to "VOLT".
+        """
+        self._require_source_mode("VOLT")
+
+        if isinstance(value, str):
+            if value.strip().upper() == "AUTO":
+                return self.write_scpi(
+                    subsystem="SOUR",
+                    function="VOLT:RANG:AUTO",
+                    value="ON"
+                )
+            else:
+                raise TypeError(f"Invalid string value for range: {value}")
+
+        if isinstance(value, (float, int)):
+            return self.write_scpi(
+                subsystem="SOUR",
+                function="VOLT:RANG",
+                value=float(value)
+            )
+
+        raise TypeError(f"Voltage range must be float or 'AUTO', got {type(value)}")
+
+    def set_current_range(self, value):
+        """
+        Set the source current range of the instrument.
+
+        This method configures the current source range using the SCPI
+        `SOUR:CURR:RANG` command or enables auto-ranging with
+        `SOUR:CURR:RANG:AUTO ON`.
+
+        Parameters
+        ----------
+        value : float or str
+            Current range to be set (in amperes), or "AUTO" to enable auto-ranging.
+
+        Returns
+        -------
+        Any
+            The response returned by the underlying SCPI write operation.
+
+        Raises
+        ------
+        TypeError
+            If the provided value is neither numeric nor "AUTO".
+        ValueError
+            If the instrument is not in current source mode.
+
+        Notes
+        -----
+        This operation is only valid when the source mode is set to "CURR".
+        """
+        self._require_source_mode("CURR")
+
+        if isinstance(value, str):
+            if value.strip().upper() == "AUTO":
+                return self.write_scpi(
+                    subsystem="SOUR",
+                    function="CURR:RANG:AUTO",
+                    value="ON"
+                )
+            else:
+                raise TypeError(f"Invalid string value for range: {value}")
+
+        if isinstance(value, (float, int)):
+            return self.write_scpi(
+                subsystem="SOUR",
+                function="CURR:RANG",
+                value=float(value)
+            )
+
+        raise TypeError(f"Current range must be float or 'AUTO', got {type(value)}")
+
+
+    def _require_source_mode(self, expected: str):
+        """
+        Ensure the instrument is in the expected source mode.
+
+        Parameters
+        ----------
+        expected : str
+            Expected source mode ("VOLT" or "CURR").
+
+        Raises
+        ------
+        ValueError
+            If the current source mode does not match the expected one.
+        """
+        mode = self.get_source_mode()
+        if mode != expected:
+            raise ValueError(
+                f"Invalid source mode '{mode}', expected '{expected}'."
+            )
     # ========================= =========================
     # STATus commands
     # ========================= =========================
@@ -636,58 +778,6 @@ class Keithley24xx(SCPIInstrument):
     # Trigger commads
     # ========================= =========================
 
-    # ========================= =========================
-    # UNIT commads
-    # ========================= =========================
-    def set_unit(self, unit=None):
-        """
-        Set the measurement unit for the active function.
-
-        This method configures the unit used by the instrument for the current
-        measurement function (e.g., Celsius, Fahrenheit, Ohms, Volts, etc.).
-
-        Args:
-            unit (str | None):
-                Unit to set for the active function. The valid values depend on
-                the measurement function (e.g., "C" or "F" for temperature).
-                If None, instrument behavior depends on its defaults.
-
-        Returns:
-            Any:
-                Result returned by `write_scpi`.
-
-        Side Effects:
-            - Updates the unit configuration (`UNIT:<function>`) for the active function.
-
-        Notes:
-            - The active function is obtained via `get_function()`.
-            - Supported units depend on the instrument and selected function.
-            - This setting persists until changed.
-        """
-        return self.write_scpi(subsystem="UNIT", function=self.get_function(), value=unit)
-
-    def get_unit(self, channel_list=None):
-        """
-        Get the measurement unit for the active function.
-
-        This method queries the instrument for the currently configured unit
-        associated with the active measurement function.
-
-        Args:
-            channel_list (list[int] | None):
-                Optional list of channels to query. If None, queries the active
-                channel or global configuration depending on the instrument.
-
-        Returns:
-            Any:
-                Current unit as returned by the instrument (e.g., "C", "F", "OHM", "V").
-
-        Notes:
-            - Uses the active function from `get_function()`.
-            - Useful for verifying configuration consistency across channels.
-        """
-        return self.query_scpi(subsystem="UNIT", function=self.get_function(), channels=channel_list)
-
     # =========================
     # MEASURE
     # =========================
@@ -699,7 +789,7 @@ class Keithley24xx(SCPIInstrument):
     # =========================
     # FILTER (simple)
     # =========================
-    def enable_averaging(self, count=5, tcontrol='REP', window=None | float):
+    def enable_averaging(self, count=5, tcontrol='REP'):
         """
         Enable and configure measurement averaging for the active function.
 
@@ -708,7 +798,7 @@ class Keithley24xx(SCPIInstrument):
         averaging control type, and optional window size.
 
         The averaging is applied using the SCPI commands corresponding to the
-        currently active function (e.g., VOLT, CURR, RES, TEMP, etc.).
+        currently active function (e.g., VOLT, CURR).
 
         Args:
             count (int):
@@ -721,20 +811,14 @@ class Keithley24xx(SCPIInstrument):
                     - 'MOV' (Moving): Applies a moving average over a sliding window.
                 Case-insensitive.
 
-            window (float | None):
-                Size of the moving average window. Only valid when `tcontrol='MOV'`.
-                If provided with 'REP', a ValueError is raised.
-
         Raises:
             ValueError:
                 - If `tcontrol` is not one of the supported values ('REP', 'MOV').
-                - If `window` is provided while `tcontrol` is not 'MOV'.
 
         Side Effects:
             - Enables averaging for the active measurement function.
             - Configures averaging count (`AVER:COUN`).
             - Sets averaging control mode (`AVER:TCON`).
-            - Optionally configures averaging window (`AVER:WIND`).
 
         Notes:
             - The active measurement function is obtained via `get_function()`.
@@ -744,7 +828,7 @@ class Keithley24xx(SCPIInstrument):
               for discrete measurements.
 
         Example:
-            inst.enable_averaging(count=10, tcontrol='MOV', window=5)
+            inst.enable_averaging(count=10, tcontrol='MOV')
         """
         actual_function = self.get_function()
 
@@ -757,12 +841,6 @@ class Keithley24xx(SCPIInstrument):
             if tcontrol not in SUPPORTED_TCON:
                 raise ValueError(f"TCON inválido: {tcontrol} (usa REP o MOV)")
             self.write_scpi(subsystem="SENS", function=f"{actual_function}:AVER:TCON", value=tcontrol)
-
-        # Window solo tiene sentido con MOV
-        if window is not None:
-            if tcontrol != "MOV":
-                raise ValueError("WINDOW solo es válido cuando TCON = MOV")
-            self.write_scpi(subsystem="SENS", function=f"{actual_function}:AVER:WIND", value=window)
 
     def disable_averaging(self):
         """
@@ -787,8 +865,18 @@ class Keithley24xx(SCPIInstrument):
 
 
 def main():
-    k24xx = Keithley24xx(gpib_address=16)
-    k27xx.idn()
+    k24xx = Keithley24xx(gpib_address=22)
+    k24xx.wait_opc()
+    k24xx.enable_incognito_mode()
+    print(k24xx.idn())
+    k24xx.set_nplc(1)
+    print(k24xx.get_nplc())
+    k24xx.set_output_route("FRONT")
+    print(k24xx.get_function())
+    k24xx.configure_output_format(voltage=True, current=True)
+    k24xx.set_source_mode(mode="VOLT")
+    k24xx.set_output(on=True)
+    print(k24xx.read())
 
 
 if __name__ == "__main__":

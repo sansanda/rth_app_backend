@@ -122,7 +122,7 @@ class SCPIInstrument:
             print(f"[WRITE] {cmd}")
         self.inst.write(cmd)
 
-    def query(self, cmd: str, debug: bool = True) -> str:
+    def query(self, cmd: str, debug: bool = True, debug_response=True) -> str:
         """
         Envía una query al instrumento y devuelve la respuesta.
 
@@ -138,9 +138,12 @@ class SCPIInstrument:
         str
             Respuesta del instrumento.
         """
+        response = self.inst.query(cmd)
         if debug:
             print(f"[QUERY] {cmd}")
-        return self.inst.query(cmd)
+        if debug_response:
+            print(f"[QUERY_RESPONSE] {response}")
+        return response
 
     # =========================
     # SCPI HELPERS
