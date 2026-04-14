@@ -85,12 +85,116 @@ def parse_reading(raw):
 
 
 class Keithley24xx(SCPIInstrument):
-    # TODO: Adaptar lo necesario y eliminar lo innecesario
+    """
+    Driver for Keithley 24xx SourceMeter instruments (e.g., 2400 series).
+
+    Version
+    -------
+    1.0
+
+    Overview
+    --------
+    This class provides a high-level, Pythonic interface for controlling
+    Keithley 24xx SourceMeter instruments via SCPI over GPIB.
+
+    It abstracts low-level SCPI commands into a consistent API for configuring
+    source and measurement (sense) functions, ranges, levels, compliance limits,
+    and acquisition parameters.
+
+    The design follows a clear separation between:
+        - Source (SOUR): signal generation (voltage or current)
+        - Sense (SENS): measurement configuration (voltage, current, etc.)
+
+    Key Features
+    ------------
+    - Unified API for source configuration:
+        - set_source_mode()
+        - set_source_level() / get_source_level()
+        - set_source_range() / get_source_range()
+
+    - Unified API for measurement configuration:
+        - set_sense_function() / get_sense_function()
+        - set_measure_range() / get_measure_range()
+        - set_sense_compliance() / get_sense_compliance()
+        - set_nplc() / get_nplc()
+
+    - Automatic behavior:
+        - Setting source mode automatically configures a typical sense function:
+            VOLT → CURR:DC
+            CURR → VOLT:DC
+
+    - Output configuration:
+        - configure_output_format()
+        - parse_reading() helper for structured data extraction
+
+    - Measurement utilities:
+        - read() returns parsed measurement data
+        - Averaging support (enable_averaging / disable_averaging)
+
+    Design Principles
+    -----------------
+    - Minimal abstraction over SCPI (transparent mapping)
+    - No unnecessary restrictions on valid instrument configurations
+    - No caching (v1.0) to ensure state always reflects real instrument
+    - Consistent naming and symmetry between source and measure APIs
+    - Safe defaults aligned with common lab workflows (I-V measurements)
+
+    Notes
+    -----
+    - This driver assumes exclusive control of the instrument.
+      External changes (front panel or other software) are not tracked.
+
+    - Measurement range and compliance are not artificially restricted.
+      The instrument is allowed to handle overloads or compliance conditions.
+
+    - Output parsing is tolerant to multiple formats but may need adaptation
+      depending on FORM:ELEM configuration.
+
+    Typical Usage
+    -------------
+    # >>> inst = Keithley24xx(gpib_address=22)
+    # >>> inst.init_config()
+    # >>> inst.set_source_mode("VOLT")
+    # >>> inst.set_source_range(10)
+    # >>> inst.set_source_level(5)
+    # >>> inst.set_sense_compliance(0.01)
+    # >>> inst.set_output(True)
+    # >>> reading = inst.read()
+
+    Example (I-V measurement)
+    ------------------------
+    # >>> inst.set_source_mode("VOLT")      # Source voltage
+    # >>> inst.set_sense_function("CURR:DC") # Measure current
+    # >>> inst.set_measure_range("AUTO")
+    # >>> inst.set_source_level(1.0)
+    # >>> inst.set_output(True)
+    # >>> print(inst.read())
+
+    Limitations (v1.0)
+    -----------------
+    - No caching of instrument state (performance not optimized)
+    - Limited validation of cross-parameter consistency
+    - Partial support for advanced features (trigger model, trace buffer, etc.)
+    - parse_reading() may require adaptation for specific configurations
+
+    Future Improvements
+    -------------------
+    - Optional caching layer for performance optimization
+    - High-level measurement workflows (e.g., IV sweeps)
+    - Enhanced error handling and status monitoring
+    - Full support for trigger and buffer subsystems
+
+    Dependencies
+    ------------
+    - SCPIInstrument base class
+    - PyVISA-compatible backend (via SCPIInstrument)
+    """
 
     def __init__(self, gpib_card=0, gpib_address=16, timeout=10000):
         resource_name = "GPIB" + str(gpib_card) + "::" + str(gpib_address) + "::INSTR"
         super().__init__(resource_name, timeout)
         self._source_mode = None  # cache interna
+
     # =========================
     # CONFIG
     # =========================
@@ -332,10 +436,6 @@ class Keithley24xx(SCPIInstrument):
                 Integration time expressed in power line cycles (e.g., 0.1, 1, 10).
                 Typical values depend on the instrument and measurement function.
 
-            channel_list (list[int] | None):
-                Optional list of channels to apply the setting to. If None, applies
-                to the active channel or global configuration depending on the instrument.
-
         Returns:
             Any:
                 Result returned by `write_scpi`.
@@ -349,7 +449,7 @@ class Keithley24xx(SCPIInstrument):
               but slow down measurements.
         """
         return self.write_scpi(subsystem="SENS",
-                               function=f"{self.get_function()}:NPLC",
+                               function=f"{self.get_sense_function()}:NPLC",
                                value=nplc)
 
     def get_nplc(self):
@@ -369,20 +469,32 @@ class Keithley24xx(SCPIInstrument):
             - Useful for verifying measurement speed vs. accuracy configuration.
         """
         return self.query_scpi(subsystem="SENS",
-                               function=f"{self.get_function()}:NPLC")
+                               function=f"{self.get_sense_function()}:NPLC")
 
-    def set_function(self, function: str):
+    def set_sense_function(self, function: str):
         """
-        Set measurement function on Keithley 2700.
+        Set measurement (sense) function on the instrument.
 
-        Parameters:
-            function (str): One of:
+        Parameters
+        ----------
+        function : str
+            One of:
                 "VOLT:DC", "VOLT:AC",
                 "CURR:DC", "CURR:AC",
                 "RES", "FRES",
                 "TEMP",
                 "FREQ", "PER",
                 "CONT"
+
+        Returns
+        -------
+        Any
+            The response returned by the underlying SCPI write operation.
+
+        Raises
+        ------
+        ValueError
+            If the provided function is not supported.
         """
 
         function = function.upper()
@@ -390,20 +502,22 @@ class Keithley24xx(SCPIInstrument):
         if function not in SUPPORTED_FUNCTIONS:
             raise ValueError(f"Función no válida: {function}")
 
-        return self.write_scpi(subsystem="SENS", function="FUNC", value=function, quoted=True)
+        return self.write_scpi(
+            subsystem="SENS",
+            function="FUNC",
+            value=function,
+            quoted=True
+        )
 
-    def get_function(self, channel_list=None):
+    def get_sense_function(self):
         """
-        Get the active measurement function.
+        Get the active sense function.
 
         This method queries the instrument to retrieve the currently configured
         measurement function (e.g., "VOLT:DC", "CURR:DC", "RES", "TEMP") and
         returns it as a clean string without SCPI formatting.
 
         Args:
-            channel_list (list[int] | None):
-                Optional list of channels to query. If None, queries the active
-                channel or global configuration depending on the instrument.
 
         Returns:
             str:
@@ -418,21 +532,62 @@ class Keithley24xx(SCPIInstrument):
             - This value is widely used internally to build other SCPI commands
               dynamically.
         """
-        response = self.query_scpi(subsystem="SENS", function="FUNC", channels=channel_list)
+        response = self.query_scpi(subsystem="SENS", function="FUNC")
         function = response.strip().replace('"', '')
         return function
 
-    def set_compliance_current(self, value: float):
+    def get_sense_compliance(self):
         """
-        Set the current compliance (protection limit) of the instrument.
+        Get the compliance (protection limit) based on the active source mode.
 
-        This method sets the maximum allowed current when the instrument is
-        sourcing voltage, using the SCPI `SENS:CURR:PROT` command.
+        Returns
+        -------
+        float
+            Compliance value (in amperes if sourcing voltage, or volts if sourcing current).
+
+        Raises
+        ------
+        ValueError
+            If the source mode is not supported.
+        """
+
+        source_mode = self.get_source_mode()
+
+        if source_mode == "VOLT":
+            # Compliance es corriente
+            return float(
+                self.query_scpi(
+                    subsystem="SENS",
+                    function="CURR:PROT"
+                )
+            )
+
+        elif source_mode == "CURR":
+            # Compliance es tensión
+            return float(
+                self.query_scpi(
+                    subsystem="SENS",
+                    function="VOLT:PROT"
+                )
+            )
+
+        else:
+            raise ValueError(
+                f"Invalid source mode '{source_mode}', expected 'VOLT' or 'CURR'."
+            )
+
+    def set_sense_compliance(self, value: float):
+        """
+        Set the compliance (protection limit) based on the active source mode.
+
+        This method sets:
+        - Current compliance when sourcing voltage
+        - Voltage compliance when sourcing current
 
         Parameters
         ----------
         value : float
-            Compliance current limit (in amperes).
+            Compliance limit (A or V depending on mode).
 
         Returns
         -------
@@ -444,35 +599,44 @@ class Keithley24xx(SCPIInstrument):
         TypeError
             If the provided value is not numeric.
         ValueError
-            If the instrument is not in voltage source mode.
-
-        Notes
-        -----
-        This operation is only valid when the source mode is "VOLT".
-        The compliance current acts as a protection limit for the DUT.
+            If the source mode is not supported.
         """
+
         if not isinstance(value, (float, int)):
-            raise TypeError(f"Compliance current must be a float, got {type(value)}")
+            raise TypeError(f"Compliance must be a float, got {type(value)}")
 
-        self._require_source_mode("VOLT")
+        source_mode = self.get_source_mode()
 
-        return self.write_scpi(
-            subsystem="SENS",
-            function="CURR:PROT",
-            value=float(value)
-        )
+        if source_mode == "VOLT":
+            return self.write_scpi(
+                subsystem="SENS",
+                function="CURR:PROT",
+                value=float(value)
+            )
 
-    def set_compliance_voltage(self, value: float):
+        elif source_mode == "CURR":
+            return self.write_scpi(
+                subsystem="SENS",
+                function="VOLT:PROT",
+                value=float(value)
+            )
+
+        else:
+            raise ValueError(
+                f"Invalid source mode '{source_mode}', expected 'VOLT' or 'CURR'."
+            )
+
+    def set_sense_range(self, value):
         """
-        Set the voltage compliance (protection limit) of the instrument.
+        Set the measurement range based on the active sense function.
 
-        This method sets the maximum allowed voltage when the instrument is
-        sourcing current, using the SCPI `SENS:VOLT:PROT` command.
+        This method configures the measurement range using the SCPI
+        `SENS:<FUNC>:RANG` command or enables auto-ranging.
 
         Parameters
         ----------
-        value : float
-            Compliance voltage limit (in volts).
+        value : float or str
+            Range value (in appropriate units), or "AUTO" to enable auto-ranging.
 
         Returns
         -------
@@ -482,24 +646,77 @@ class Keithley24xx(SCPIInstrument):
         Raises
         ------
         TypeError
-            If the provided value is not numeric.
+            If the provided value is neither numeric nor "AUTO".
         ValueError
-            If the instrument is not in current source mode.
-
-        Notes
-        -----
-        This operation is only valid when the source mode is "CURR".
-        The compliance voltage acts as a protection limit for the DUT.
+            If the measurement function is unsupported.
         """
-        if not isinstance(value, (float, int)):
-            raise TypeError(f"Compliance voltage must be a float, got {type(value)}")
 
-        self._require_source_mode("CURR")
+        quantity = self.get_sense_function().split(":")[0].upper()
 
-        return self.write_scpi(
+        if quantity not in ("CURR", "VOLT"):
+            raise ValueError(
+                f"Range setting not supported for measurement function '{quantity}'"
+            )
+
+        # --- AUTO ---
+        if isinstance(value, str):
+            if value.strip().upper() == "AUTO":
+                return self.write_scpi(
+                    subsystem="SENS",
+                    function=f"{quantity}:RANG:AUTO",
+                    value="ON"
+                )
+            else:
+                raise TypeError(f"Invalid string value for range: {value}")
+
+        # --- NUMÉRICO ---
+        if isinstance(value, (float, int)):
+            return self.write_scpi(
+                subsystem="SENS",
+                function=f"{quantity}:RANG",
+                value=float(value)
+            )
+
+        raise TypeError(f"Range must be float or 'AUTO', got {type(value)}")
+
+    def get_sense_range(self):
+        """
+        Get the measurement range based on the active sense function.
+
+        Returns
+        -------
+        float or str
+            The current measurement range value, or "AUTO" if auto-ranging is enabled.
+
+        Raises
+        ------
+        ValueError
+            If the measurement function is unsupported.
+        """
+
+        # Obtener función activa (ej: "VOLT:DC" → "VOLT")
+        quantity = self.get_sense_function().split(":")[0].upper()
+
+        if quantity not in ("CURR", "VOLT"):
+            raise ValueError(
+                f"Range not supported for measurement function '{quantity}'"
+            )
+
+        # Comprobar si está en AUTO
+        auto = self.query_scpi(
             subsystem="SENS",
-            function="VOLT:PROT",
-            value=float(value)
+            function=f"{quantity}:RANG:AUTO"
+        ).strip().upper()
+
+        if auto == "ON":
+            return "AUTO"
+
+        # Si no está en AUTO, devolver valor numérico
+        return float(
+            self.query_scpi(
+                subsystem="SENS",
+                function=f"{quantity}:RANG"
+            )
         )
 
     # ========================= =========================
@@ -508,16 +725,47 @@ class Keithley24xx(SCPIInstrument):
     def set_source_mode(self, mode="VOLT"):
         """
         Set the source function mode of the instrument.
+
+        Additionally, configures a default sense function:
+        - VOLT → CURR:DC
+        - CURR → VOLT:DC
+
+        Parameters
+        ----------
+        mode : str
+            "VOLT" or "CURR"
+
+        Returns
+        -------
+        Any
+            The response returned by the underlying SCPI write operation.
+
+        Raises
+        ------
+        ValueError
+            If the mode is invalid.
         """
+
         mode = mode.strip().upper()
 
         if mode not in ("VOLT", "CURR"):
             raise ValueError(f"Invalid source mode: {mode}. Expected 'VOLT' or 'CURR'.")
 
-        result = self.write_scpi(subsystem="SOUR", function="FUNC:MODE", value=mode)
+        # 🔹 Configurar source
+        result = self.write_scpi(
+            subsystem="SOUR",
+            function="FUNC:MODE",
+            value=mode
+        )
 
-        # 🔥 actualizas cache SOLO si el comando se ha enviado
+        # 🔥 actualizar cache
         self._source_mode = mode
+
+        # 🔹 Configurar sense por defecto (comportamiento típico)
+        if mode == "VOLT":
+            self.set_sense_function("CURR:DC")
+        elif mode == "CURR":
+            self.set_sense_function("VOLT:DC")
 
         return result
 
@@ -541,114 +789,80 @@ class Keithley24xx(SCPIInstrument):
 
         return self._source_mode
 
-    def set_voltage_level(self, value: float):
+    def set_source_level(self, value: float):
         """
-        Set the source voltage level of the instrument.
-
-        This method sets the output voltage using the SCPI `SOUR:VOLT` command.
-        It verifies that the instrument is configured in voltage source mode and
-        ensures that the level does not exceed the configured range.
-
-        Parameters
-        ----------
-        value : float
-            Voltage level to be sourced (in volts).
-
-        Returns
-        -------
-        Any
-            The response returned by the underlying SCPI write operation.
-
-        Raises
-        ------
-        TypeError
-            If the provided value is not numeric.
-        ValueError
-            If the instrument is not in voltage source mode or if the level
-            exceeds the configured range.
-
-        Notes
-        -----
-        This operation is only valid when the source mode is set to "VOLT".
+        Set the source level (voltage or current) based on the active source mode.
         """
+
         if not isinstance(value, (float, int)):
-            raise TypeError(f"Voltage level must be a float, got {type(value)}")
+            raise TypeError(f"Source level must be a float, got {type(value)}")
 
-        self._require_source_mode("VOLT")
+        source_mode = self.get_source_mode()
+
+        if source_mode not in ("VOLT", "CURR"):
+            raise ValueError(
+                f"Invalid source mode '{source_mode}', expected 'VOLT' or 'CURR'."
+            )
 
         level = float(value)
 
-        # 🔎 Validación contra rango (si no está en AUTO)
-        auto = self.query_scpi(subsystem="SOUR", function="VOLT:RANG:AUTO").strip().upper()
-        if auto == "OFF":
-            range_value = float(self.query_scpi(subsystem="SOUR", function="VOLT:RANG"))
-            if level > range_value:
+        # 🔎 Validación contra rango usando función reutilizable
+        range_value = self.get_source_range()
+
+        if range_value != "AUTO":
+            if abs(level) > range_value:
                 raise ValueError(
-                    f"Voltage level ({level}) exceeds configured range ({range_value})"
+                    f"{source_mode} level ({level}) exceeds configured range ({range_value})"
                 )
 
-        return self.write_scpi(subsystem="SOUR", function="VOLT", value=level)
+        return self.write_scpi(
+            subsystem="SOUR",
+            function=f"{source_mode}",
+            value=level
+        )
 
-    def set_current_level(self, value: float):
+    def get_source_level(self):
         """
-        Set the source current level of the instrument.
-
-        This method sets the output current using the SCPI `SOUR:CURR` command.
-        It verifies that the instrument is configured in current source mode and
-        ensures that the level does not exceed the configured range.
-
-        Parameters
-        ----------
-        value : float
-            Current level to be sourced (in amperes).
+        Get the source level (voltage or current) based on the active source mode.
 
         Returns
         -------
-        Any
-            The response returned by the underlying SCPI write operation.
+        float
+            Source level (in volts if sourcing voltage, or amperes if sourcing current).
 
         Raises
         ------
-        TypeError
-            If the provided value is not numeric.
         ValueError
-            If the instrument is not in current source mode or if the level
-            exceeds the configured range.
-
-        Notes
-        -----
-        This operation is only valid when the source mode is set to "CURR".
+            If the source mode is not supported.
         """
-        if not isinstance(value, (float, int)):
-            raise TypeError(f"Current level must be a float, got {type(value)}")
 
-        self._require_source_mode("CURR")
+        source_mode = self.get_source_mode()
 
-        level = float(value)
+        if source_mode not in ("VOLT", "CURR"):
+            raise ValueError(
+                f"Invalid source mode '{source_mode}', expected 'VOLT' or 'CURR'."
+            )
 
-        # 🔎 Validación contra rango (si no está en AUTO)
-        auto = self.query_scpi(subsystem="SOUR", function="CURR:RANG:AUTO").strip().upper()
-        if auto == "OFF":
-            range_value = float(self.query_scpi(subsystem="SOUR", function="CURR:RANG"))
-            if level > range_value:
-                raise ValueError(
-                    f"Current level ({level}) exceeds configured range ({range_value})"
-                )
+        return float(
+            self.query_scpi(
+                subsystem="SOUR",
+                function=f"{source_mode}"
+            )
+        )
 
-        return self.write_scpi(subsystem="SOUR", function="CURR", value=level)
-
-    def set_voltage_range(self, value):
+    def set_source_range(self, value):
         """
-        Set the source voltage range of the instrument.
+        Set the source range (voltage or current) based on the active source mode.
 
-        This method configures the voltage source range using the SCPI
-        `SOUR:VOLT:RANG` command or enables auto-ranging with
-        `SOUR:VOLT:RANG:AUTO ON`.
+        This method configures the source range using the SCPI
+        `SOUR:<MODE>:RANG` command or enables auto-ranging with
+        `SOUR:<MODE>:RANG:AUTO ON`, where <MODE> is "VOLT" or "CURR".
 
         Parameters
         ----------
         value : float or str
-            Voltage range to be set (in volts), or "AUTO" to enable auto-ranging.
+            Range to be set (in volts or amperes depending on mode),
+            or "AUTO" to enable auto-ranging.
 
         Returns
         -------
@@ -660,19 +874,22 @@ class Keithley24xx(SCPIInstrument):
         TypeError
             If the provided value is neither numeric nor "AUTO".
         ValueError
-            If the instrument is not in voltage source mode.
-
-        Notes
-        -----
-        This operation is only valid when the source mode is set to "VOLT".
+            If the current source mode is not supported.
         """
-        self._require_source_mode("VOLT")
+
+        source_mode = self.get_source_mode()
+
+        # 🔒 Solo soportamos VOLT y CURR
+        if source_mode not in ("VOLT", "CURR"):
+            raise ValueError(
+                f"Invalid source mode '{source_mode}', expected 'VOLT' or 'CURR'."
+            )
 
         if isinstance(value, str):
             if value.strip().upper() == "AUTO":
                 return self.write_scpi(
                     subsystem="SOUR",
-                    function="VOLT:RANG:AUTO",
+                    function=f"{source_mode}:RANG:AUTO",
                     value="ON"
                 )
             else:
@@ -681,62 +898,50 @@ class Keithley24xx(SCPIInstrument):
         if isinstance(value, (float, int)):
             return self.write_scpi(
                 subsystem="SOUR",
-                function="VOLT:RANG",
+                function=f"{source_mode}:RANG",
                 value=float(value)
             )
 
-        raise TypeError(f"Voltage range must be float or 'AUTO', got {type(value)}")
+        raise TypeError(f"Range must be float or 'AUTO', got {type(value)}")
 
-    def set_current_range(self, value):
+    def get_source_range(self):
         """
-        Set the source current range of the instrument.
-
-        This method configures the current source range using the SCPI
-        `SOUR:CURR:RANG` command or enables auto-ranging with
-        `SOUR:CURR:RANG:AUTO ON`.
-
-        Parameters
-        ----------
-        value : float or str
-            Current range to be set (in amperes), or "AUTO" to enable auto-ranging.
+        Get the configured source range.
 
         Returns
         -------
-        Any
-            The response returned by the underlying SCPI write operation.
+        float or str
+            The current source range value, or "AUTO" if auto-ranging is enabled.
 
         Raises
         ------
-        TypeError
-            If the provided value is neither numeric nor "AUTO".
         ValueError
-            If the instrument is not in current source mode.
-
-        Notes
-        -----
-        This operation is only valid when the source mode is set to "CURR".
+            If the source mode is not supported.
         """
-        self._require_source_mode("CURR")
 
-        if isinstance(value, str):
-            if value.strip().upper() == "AUTO":
-                return self.write_scpi(
-                    subsystem="SOUR",
-                    function="CURR:RANG:AUTO",
-                    value="ON"
-                )
-            else:
-                raise TypeError(f"Invalid string value for range: {value}")
+        source_mode = self.get_source_mode()
 
-        if isinstance(value, (float, int)):
-            return self.write_scpi(
-                subsystem="SOUR",
-                function="CURR:RANG",
-                value=float(value)
+        if source_mode not in ("VOLT", "CURR"):
+            raise ValueError(
+                f"Invalid source mode '{source_mode}', expected 'VOLT' or 'CURR'."
             )
 
-        raise TypeError(f"Current range must be float or 'AUTO', got {type(value)}")
+        auto = self.query_scpi(
+            subsystem="SOUR",
+            function=f"{source_mode}:RANG:AUTO"
+        ).strip().upper()
 
+        if auto == "ON":
+            return "AUTO"
+
+        range_value = float(
+            self.query_scpi(
+                subsystem="SOUR",
+                function=f"{source_mode}:RANG"
+            )
+        )
+
+        return range_value
 
     def _require_source_mode(self, expected: str):
         """
@@ -757,12 +962,13 @@ class Keithley24xx(SCPIInstrument):
             raise ValueError(
                 f"Invalid source mode '{mode}', expected '{expected}'."
             )
+
     # ========================= =========================
     # STATus commands
     # ========================= =========================
 
     # ========================= =========================
-    # SYSTem commads
+    # SYSTem commands
     # ========================= =========================
     def enable_beeper(self, enable=True):
         return self.write_scpi(subsystem="SYST", function="BEEP:STAT", value=enable)
@@ -771,11 +977,11 @@ class Keithley24xx(SCPIInstrument):
         return self.write_scpi(subsystem="SYST", function="AZER:STAT", value=enable)
 
     # ========================= =========================
-    # TRACe commads
+    # TRACe commands
     # ========================= =========================
 
     # ========================= =========================
-    # Trigger commads
+    # Trigger commands
     # ========================= =========================
 
     # =========================
@@ -830,7 +1036,7 @@ class Keithley24xx(SCPIInstrument):
         Example:
             inst.enable_averaging(count=10, tcontrol='MOV')
         """
-        actual_function = self.get_function()
+        actual_function = self.get_sense_function()
 
         self.write_scpi(subsystem="SENS", function=f"{actual_function}:AVER:STAT", value="ON")
         self.write_scpi(subsystem="SENS", function=f"{actual_function}:AVER:COUN", value=count)
@@ -861,7 +1067,7 @@ class Keithley24xx(SCPIInstrument):
             - This only disables averaging; previously configured parameters
               (e.g., count, mode, window) remain stored in the instrument.
         """
-        return self.write_scpi(subsystem="SENS", function=f"{self.get_function()}:AVER:STAT", value="OFF")
+        return self.write_scpi(subsystem="SENS", function=f"{self.get_sense_function()}:AVER:STAT", value="OFF")
 
 
 def main():
@@ -872,10 +1078,17 @@ def main():
     k24xx.set_nplc(1)
     print(k24xx.get_nplc())
     k24xx.set_output_route("FRONT")
-    print(k24xx.get_function())
+    print(k24xx.get_sense_function())
     k24xx.configure_output_format(voltage=True, current=True)
     k24xx.set_source_mode(mode="VOLT")
+    k24xx.set_source_range(10)
+    k24xx.set_source_level(5)
+    k24xx.get_source_level()
+    k24xx.set_sense_compliance(1)
+
+
     k24xx.set_output(on=True)
+    print(k24xx.read())
     print(k24xx.read())
 
 
