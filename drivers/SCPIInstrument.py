@@ -1,6 +1,8 @@
 import pyvisa
 from pyvisa import Resource
 
+from drivers.instrument import Instrument
+
 # =========================
 # CONSTANTS
 # =========================
@@ -19,7 +21,6 @@ SUPPORTED_TCOUPLES = {
     "B": "Type B (Platinum-Rhodium)",
     "N": "Type N (Nicrosil-Nisil)"
 }
-
 
 SUPPORTED_FRTDS = {
     "PT100": "Platinum RTD 100Ω",
@@ -61,7 +62,8 @@ PARAM_MAP = {
     "frtd_type": "FRTD:TYPE"
 }
 
-class SCPIInstrument:
+
+class SCPIInstrument(Instrument):
     """
     Clase base para instrumentos compatibles con SCPI.
 
@@ -87,21 +89,45 @@ class SCPIInstrument:
             Timeout en milisegundos. Por defecto 10000 ms.
         """
         self.rm = pyvisa.ResourceManager()
-        self.inst: Resource = self.rm.open_resource(resource_name)
-        self.inst.timeout = timeout
+        self.inst = None
+        self._resource_name = resource_name
+        self._timeout = timeout
+        self._connected = False
 
-    def reconnect(self, resource_name: str, timeout_ms: int):
-        """
-        Reconnect to instrument with new GPIB address and timeout.
-        """
-        # cerrar conexión actual
+    def connect(self):
+        """(Re)connect to the instrument."""
+        if self._connected:
+            return
+        self.inst = self.rm.open_resource(self._resource_name)
+        self.inst.timeout = self._timeout
+        self._connected = True
+
+    def disconnect(self):
+        """Disconnect from instrument."""
+        if not self._connected:
+            return
+
         try:
-            self.close()
-        except Exception:
-            pass
+            self.inst.close()
+        finally:
+            self._connected = False
 
-        self.inst = self.rm.open_resource(resource_name)
-        self.inst.timeout = timeout_ms
+    def _ensure_connected(self):
+        if not self._connected:
+            raise RuntimeError("Instrument not connected")
+
+    def reconnect(self, resource_name: str = None, timeout_ms: int = None):
+        """
+        Reconnect to instrument with optional new parameters.
+        """
+        self.disconnect()
+
+        if resource_name:
+            self._resource_name = resource_name
+        if timeout_ms:
+            self._timeout = timeout_ms
+
+        self.connect()
 
     # =========================
     # LOW LEVEL
@@ -118,6 +144,7 @@ class SCPIInstrument:
         debug : bool
             Si True, imprime el comando enviado.
         """
+        self._ensure_connected()
         if debug:
             print(f"[WRITE] {cmd}")
         self.inst.write(cmd)
@@ -138,6 +165,7 @@ class SCPIInstrument:
         str
             Respuesta del instrumento.
         """
+        self._ensure_connected()
         response = self.inst.query(cmd)
         if debug:
             print(f"[QUERY] {cmd}")
@@ -164,7 +192,7 @@ class SCPIInstrument:
 
         Devuelve el comando generado (útil para debug/testing).
         """
-        cmd = get_function_scpi_command(
+        cmd = get_scpi_command(
             subsystem=subsystem,
             function=function,
             value=value,
@@ -174,7 +202,7 @@ class SCPIInstrument:
 
         self.write(cmd, debug=debug)
 
-        if check_esr :
+        if check_esr:
             esr = self.read_esr()
             if esr["command_error"] or esr["execution_error"]:
                 raise RuntimeError(f"Error SCPI detectado: {esr} en comando {cmd}")
@@ -194,7 +222,7 @@ class SCPIInstrument:
         if not function.endswith("?"):
             function += "?"
 
-        cmd = get_function_scpi_command(
+        cmd = get_scpi_command(
             subsystem=subsystem,
             function=function,
             channels=channels
@@ -281,10 +309,11 @@ class SCPIInstrument:
     # =========================
 
     def close(self):
-        """Cierra la conexión con el instrumento."""
-        self.inst.close()
+        """Alias for disconnect."""
+        self.disconnect()
 
-def get_function_scpi_command(
+
+def get_scpi_command(
         subsystem: str,
         function: str,
         value=None,

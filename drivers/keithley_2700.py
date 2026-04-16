@@ -1,8 +1,10 @@
 import re
 import time
+from typing import Any
 
 from drivers.SCPIInstrument import SCPIInstrument, SUPPORTED_FUNCTIONS, SUPPORTED_TCON, \
     SUPPORTED_TEMPERATURE_TRANSDUCERS, SUPPORTED_TCOUPLES, SUPPORTED_FRTDS
+from interfaces.temperature_reader import TemperatureReader
 from models.configuration_models import MultimeterConfig
 
 
@@ -143,7 +145,7 @@ def parse_channel_list(value):
     return result
 
 
-class Keithley2700(SCPIInstrument):
+class Keithley2700(SCPIInstrument, TemperatureReader):
     """
     Keithley 2700 instrument driver (version 1.0).
 
@@ -172,6 +174,18 @@ class Keithley2700(SCPIInstrument):
     Version:
         1.0
     """
+
+    def read_temperature(self, channels: Any) -> float:
+
+        self.open_all_channels()
+        self.close_channels(channels=chanels + [104, 114, 124, 125])
+
+        k2700.wait_opc()
+
+        self.conn.write(f":ROUT:CLOS (@{channel})")
+        self.conn.write(":SENS:FUNC 'TEMP'")
+        value = float(self.conn.query(":READ?"))
+        return self.read()
 
     def __init__(self, gpib_card=0, gpib_address=16, timeout=10000):
         resource_name = "GPIB" + str(gpib_card) + "::" + str(gpib_address) + "::INSTR"
@@ -785,6 +799,40 @@ class Keithley2700(SCPIInstrument):
     # MEASURE
     # =========================
     def read(self):
+        """
+        Trigger a measurement on the instrument and return the parsed result.
+
+        This method sends a "READ?" command to the instrument, which initiates
+        a measurement and retrieves the result in a single operation. The raw
+        response string is then parsed into a structured dictionary using
+        `parse_reading`.
+
+        After issuing the query, the method waits for the operation to complete
+        by calling `wait_opc()` to ensure synchronization with the instrument.
+
+        Returns:
+            dict: Parsed measurement data as returned by `parse_reading`. Possible keys include:
+                - "value" (float): Measured value (e.g., temperature, voltage, etc.)
+                - "time" (float): Timestamp in seconds (if included in the response)
+                - "reading_number" (int): Sequential reading index (if included)
+
+            Example:
+                {
+                    "value": 29.4759655,
+                    "time": 4259.511,
+                    "reading_number": 34196
+                }
+
+        Raises:
+            Exception: Propagates any communication or parsing errors raised by
+            `query()` or `parse_reading()`.
+
+        Notes:
+            - This method combines triggering and reading in a single command ("READ?").
+            - For buffered or previously triggered measurements, consider using "FETCH?"
+              instead of "READ?" depending on the measurement strategy.
+            - Ensures operation completion using `wait_opc()` before returning.
+        """
         reading = parse_reading(self.query("READ?"))
         self.wait_opc()
         return reading
@@ -881,6 +929,7 @@ class Keithley2700(SCPIInstrument):
 
 def main():
     k2700 = Keithley2700(gpib_address=14)
+    k2700.connect()
     k2700.init_config()
 
     k2700.set_function(function="TEMP")

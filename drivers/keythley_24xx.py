@@ -988,6 +988,40 @@ class Keithley24xx(SCPIInstrument):
     # MEASURE
     # =========================
     def read(self):
+        """
+        Trigger a measurement on the instrument and return the parsed result.
+
+        This method sends a "READ?" command to the instrument, which initiates
+        a measurement and retrieves the result in a single operation. The raw
+        response string is then parsed into a structured dictionary using
+        `parse_reading`.
+
+        After issuing the query, the method waits for the operation to complete
+        by calling `wait_opc()` to ensure synchronization with the instrument.
+
+        Returns:
+            dict: Parsed measurement data as returned by `parse_reading`. Possible keys include:
+                - "value" (float): Measured value (e.g., temperature, voltage, etc.)
+                - "time" (float): Timestamp in seconds (if included in the response)
+                - "reading_number" (int): Sequential reading index (if included)
+
+            Example:
+                {
+                    "value": 29.4759655,
+                    "time": 4259.511,
+                    "reading_number": 34196
+                }
+
+        Raises:
+            Exception: Propagates any communication or parsing errors raised by
+            `query()` or `parse_reading()`.
+
+        Notes:
+            - This method combines triggering and reading in a single command ("READ?").
+            - For buffered or previously triggered measurements, consider using "FETCH?"
+              instead of "READ?" depending on the measurement strategy.
+            - Ensures operation completion using `wait_opc()` before returning.
+        """
         reading = parse_reading(self.query("READ?"))
         self.wait_opc()
         return reading
@@ -1072,6 +1106,7 @@ class Keithley24xx(SCPIInstrument):
 
 def main():
     k24xx = Keithley24xx(gpib_address=22)
+    k24xx.connect()
     k24xx.wait_opc()
     k24xx.enable_incognito_mode()
     print(k24xx.idn())
@@ -1086,9 +1121,12 @@ def main():
     k24xx.get_source_level()
     k24xx.set_sense_compliance(1)
 
-
     k24xx.set_output(on=True)
     print(k24xx.read())
+    print(k24xx.read())
+    k24xx.disconnect()
+    k24xx.connect()
+    k24xx.reconnect()
     print(k24xx.read())
 
 

@@ -1,6 +1,6 @@
 import pytest
 
-from drivers.SCPIInstrument import get_function_scpi_command
+from drivers.SCPIInstrument import get_scpi_command
 from drivers.keithley_2700 import Keithley2700
 
 
@@ -16,26 +16,26 @@ def k2700():
 
 
 def test_command_generation():
-    cmd = get_function_scpi_command(subsystem="SENS",
-                                    function="FUNC",
-                                    value='TEMP',
-                                    channels=[104, 105])
+    cmd = get_scpi_command(subsystem="SENS",
+                           function="FUNC",
+                           value='TEMP',
+                           channels=[104, 105])
     assert cmd == "SENS:FUNC TEMP (@104,105)"
 
 
 def test_command_generation2():
-    cmd = get_function_scpi_command(subsystem="SENS",
-                                    function="TEMP:NPLC",
-                                    value=1,
-                                    channels=[104, 105])
+    cmd = get_scpi_command(subsystem="SENS",
+                           function="TEMP:NPLC",
+                           value=1,
+                           channels=[104, 105])
     assert cmd == "SENS:TEMP:NPLC 1 (@104,105)"
 
 
 def test_command_generation3():
-    cmd = get_function_scpi_command(subsystem="SENS",
-                                    function="TEMP:AVER:TCON",
-                                    value="REP",
-                                    channels=[104, 105])
+    cmd = get_scpi_command(subsystem="SENS",
+                           function="TEMP:AVER:TCON",
+                           value="REP",
+                           channels=[104, 105])
     assert cmd == "SENS:TEMP:AVER:TCON REP (@104,105)"
 
 #
