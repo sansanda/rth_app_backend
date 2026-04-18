@@ -5,7 +5,7 @@ class CurrentMeter(ABC):
     """Interface for current measurement devices."""
 
     @abstractmethod
-    def measure_current(self) -> float:
+    def measure_current(self) -> dict:
         """
         Measure current.
 

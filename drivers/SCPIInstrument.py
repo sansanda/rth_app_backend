@@ -188,9 +188,72 @@ class SCPIInstrument(Instrument):
             check_esr: bool = True
     ):
         """
-        Construye y envía un comando SCPI.
+        Build and send a SCPI write command to the instrument, with optional error checking.
 
-        Devuelve el comando generado (útil para debug/testing).
+        This method constructs a SCPI command using ``get_scpi_command`` and sends it
+        to the instrument via ``self.write``. Optionally, it verifies the instrument
+        status by reading the Event Status Register (ESR) and raises an exception if
+        a command or execution error is detected.
+
+        Args:
+            subsystem (str):
+                SCPI subsystem (e.g., "SENS", "CONF", "ROUT").
+
+            function (str):
+                SCPI function or command within the subsystem (without '?').
+
+            value (Any, optional):
+                Value to be sent with the command (e.g., numeric, string, enum).
+                If None, the command is sent without a value.
+
+            channels (int | str | list[int] | list[str] | None, optional):
+                Channel or list of channels to include in the SCPI command.
+                Format depends on the instrument (e.g., 101, "101:110", [101, 102]).
+                If None, the command is applied without channel specification.
+
+            quoted (bool, optional):
+                If True, wraps the value in quotes when building the SCPI command.
+                Required for string-based parameters in many instruments.
+                Default is False.
+
+            debug (bool, optional):
+                If True, enables debug mode when sending the command (e.g., logging
+                or printing the SCPI command). Default is True.
+
+            check_esr (bool, optional):
+                If True, reads the Event Status Register (ESR) after sending the
+                command and raises an exception if a command or execution error
+                is detected. Default is True.
+
+        Returns:
+            str:
+                The SCPI command string that was sent to the instrument.
+
+        Raises:
+            RuntimeError:
+                If ``check_esr`` is True and the instrument reports a command or
+                execution error in the ESR.
+
+            ValueError:
+                If the SCPI command cannot be constructed correctly.
+
+            pyvisa.errors.VisaIOError:
+                If communication with the instrument fails.
+
+        Notes:
+            - ESR checking is highly recommended in automated test environments to
+              detect silent SCPI failures.
+            - Some instruments (e.g., Keithley 2700) may queue
+              errors; ensure ESR is read frequently to avoid missing them.
+            - This method does not wait for operation completion (*OPC?); use
+              additional synchronization if required.
+
+        Example:
+            >>> self.write_scpi("SENS:TEMP", "TRAN", "TC", channels=101)
+            'SENS:TEMP:TRAN TC (@101)'
+
+            >>> self.write_scpi("ROUT", "OPEN", channels=[101, 102])
+            'ROUT:OPEN (@101,102)'
         """
         cmd = get_scpi_command(
             subsystem=subsystem,
@@ -217,7 +280,53 @@ class SCPIInstrument(Instrument):
             debug: bool = False
     ) -> str:
         """
-        Construye y envía una query SCPI.
+        Build and send a SCPI query command to the instrument and return its response.
+
+        This method ensures that the SCPI function is formatted as a query (i.e., it
+        ends with '?'), constructs the full command using ``get_scpi_command``, and
+        sends it to the instrument via ``self.query``.
+
+        Args:
+            subsystem (str):
+                SCPI subsystem (e.g., "SENS", "MEAS", "ROUT").
+
+            function (str):
+                SCPI function or command within the subsystem. The method will
+                automatically append '?' if not present.
+
+            channels (int | str | list[int] | list[str] | None, optional):
+                Channel or list of channels to include in the SCPI command.
+                Format depends on the instrument (e.g., 101, "101:110", [101, 102]).
+                If None, the command is applied without channel specification.
+
+            debug (bool, optional):
+                If True, enables debug mode when sending the command (typically
+                prints or logs the SCPI command). Default is False.
+
+        Returns:
+            str:
+                Raw response string returned by the instrument.
+
+        Raises:
+            ValueError:
+                If the SCPI command cannot be constructed correctly.
+
+            pyvisa.errors.VisaIOError:
+                If communication with the instrument fails.
+
+        Notes:
+            - This method does not parse or validate the response.
+            - Ensure the instrument is in the correct state (e.g., channel selected,
+              function configured) before calling this method.
+            - Channel formatting must be compatible with the target instrument
+              (e.g., Keithley 2700 scanner syntax).
+
+        Example:
+            >>> self.query_scpi("SENS:TEMP", "TRAN", channels=101)
+            'TC'
+
+            >>> self.query_scpi("MEAS:VOLT:DC", "READ")
+            '1.234E+00'
         """
         if not function.endswith("?"):
             function += "?"

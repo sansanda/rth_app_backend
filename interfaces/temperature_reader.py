@@ -6,7 +6,7 @@ class TemperatureReader(ABC):
     """Interface for temperature measurement devices."""
 
     @abstractmethod
-    def read_temperature(self, channel: Any) -> float:
+    def read_temperature(self, channel: Any) -> dict:
         """
         Read temperature from a specific channel.
 

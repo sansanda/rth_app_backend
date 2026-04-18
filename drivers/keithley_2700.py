@@ -175,21 +175,64 @@ class Keithley2700(SCPIInstrument, TemperatureReader):
         1.0
     """
 
-    def read_temperature(self, channels: Any) -> float:
 
-        self.open_all_channels()
-        self.close_channels(channels=chanels + [104, 114, 124, 125])
-
-        k2700.wait_opc()
-
-        self.conn.write(f":ROUT:CLOS (@{channel})")
-        self.conn.write(":SENS:FUNC 'TEMP'")
-        value = float(self.conn.query(":READ?"))
-        return self.read()
 
     def __init__(self, gpib_card=0, gpib_address=16, timeout=10000):
         resource_name = "GPIB" + str(gpib_card) + "::" + str(gpib_address) + "::INSTR"
         super().__init__(resource_name, timeout)
+
+
+    # =========================
+    # INTERFACES
+    # =========================
+
+    def read_temperature(self, channel: int) -> dict:
+        """
+        Perform a temperature measurement on the specified channel.
+
+        This method ensures that the correct scanner routing is configured
+        for the given channel before triggering a measurement. If the channel
+        is already routed with the appropriate configuration, no re-routing
+        is performed.
+
+        Args:
+            channel (int):
+                Channel number to measure or None if we are in FRONT panel
+
+        Returns:
+            dict:
+                Parsed measurement data as returned by ``parse_reading``.
+                Typical keys include:
+                    - "value" (float): Measured temperature (e.g., in °C)
+                    - "time" (float): Timestamp in seconds (if enabled)
+                    - "reading_number" (int): Sequential reading index (if enabled)
+
+        Raises:
+            RuntimeError:
+                If the instrument configuration is invalid or unsupported.
+
+            pyvisa.errors.VisaIOError:
+                If communication with the instrument fails.
+
+            Exception:
+                Propagates parsing or query errors from underlying methods.
+
+        Notes:
+            - Routing is only updated if the requested channel differs from the
+              current one, minimizing relay switching.
+            - Supports different transducer types (e.g., RTD, FRTD, TC) depending
+              on the instrument configuration.
+            - Uses the instrument's current measurement setup (integration time,
+              units, etc.).
+
+        Example:
+            temp = self.read_temperature(101)
+            temp["value"]
+            29.47
+        """
+
+        self.route_temperature_channel(channel)
+        return self.read()
 
     # =========================
     # CONFIG
@@ -483,6 +526,36 @@ class Keithley2700(SCPIInstrument, TemperatureReader):
         """
         return self.query_scpi(subsystem="ROUTE", function="CLOS", debug=True)
 
+    def _get_temperature_channels(self, channel: int, transducer: str) -> list[int]:
+        """
+        Resolve channel list based on transducer type.
+        """
+
+        if transducer == "FRTD":
+            # 4-wire: HI, LO + SENSE HI, SENSE LO
+            return [124, 125, channel, channel + 10]
+
+        # 2-wire / others
+        return [125, channel]
+
+    def route_temperature_channel(self, channel: int):
+        """
+        Configure scanner routing for temperature measurement on a channel.
+        """
+        if channel is None:
+            # FRONT case
+            return
+
+        transducer = self.get_temperature_transducer()
+
+        channels_to_close = self._get_temperature_channels(channel, transducer)
+
+        self.open_all_channels()
+        self.close_channels(channels_to_close)
+
+        # Espera a que relés se estabilicen (mejor que sleep puro)
+        self.wait_opc()
+
     # ========================= =========================
     # SENSe commands
     # ========================= =========================
@@ -722,6 +795,12 @@ class Keithley2700(SCPIInstrument, TemperatureReader):
         if transducer == "FRTD":
             self.write_scpi(subsystem="SENS", function="TEMP:FRTD:TYPE", value=transducer_type, channels=channels)
 
+    def get_temperature_transducer(self):
+        response = self.query_scpi(subsystem="SENS", function="TEMP:TRAN").strip().upper()
+        valid = {"TC", "RTD", "FRTD", "THER"}
+        if response not in valid:
+            raise ValueError(f"Unknown temperature transducer type: {response}")
+        return response
     # ========================= =========================
     # STATus commands
     # ========================= =========================
@@ -944,15 +1023,9 @@ def main():
                            window=None)
 
     k2700.enable_scan(enable=False)
-    k2700.open_all_channels()
-    k2700.close_channels(channels=[104, 114, 124, 125])
-
-    k2700.wait_opc()
-    print(k2700.are_channels_closed(channels=[104, 114, 105, 115]))
-    print(k2700.get_closed_channels())
 
     while True:
-        result = k2700.read()
+        result = k2700.read_temperature()
         k2700.wait_opc()
         print(result)
         time.sleep(1)
